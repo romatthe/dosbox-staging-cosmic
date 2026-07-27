@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText:  2020-2026 The DOSBox Staging Team
+// SPDX-FileCopyrightText:  2026-2026 The DOSBox Staging Team
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifndef DOSBOX_MIDI_SYNTH_RENDER_PAUSER_H
@@ -57,27 +57,26 @@ public:
 	// On shutdown the synth destructors call `Resume()` after stopping
 	// their work fifo (the stopped fifo is what makes the render loop
 	// itself exit), so a parked renderer never hangs teardown.
-	bool ParkIfPaused(RWQueue<AudioFrame>& audio_frame_fifo)
+	bool ParkIfPaused(RWQueue<AudioFrame>& audio_frame_fifo,
+	                  const std::stop_token& token)
 	{
 		std::unique_lock lock(mutex);
-
 		if (!is_paused) {
 			return false;
 		}
-
 		audio_frame_fifo.Stop();
 
+		// Wakes on: is_paused becoming false (Resume), OR stop_requested.
 		cv.wait(lock, [this] { return !is_paused; });
 
 		audio_frame_fifo.Start();
-
 		return true;
 	}
 
 private:
-	bool is_paused             = false;
-	std::mutex mutex           = {};
-	std::condition_variable cv = {};
+	bool is_paused                 = false;
+	std::mutex mutex               = {};
+	std::condition_variable_any cv = {};
 };
 
 #endif // DOSBOX_MIDI_SYNTH_RENDER_PAUSER_H

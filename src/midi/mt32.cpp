@@ -754,7 +754,7 @@ MidiDeviceMt32::MidiDeviceMt32()
 
 	// Start rendering audio
 	const auto render = std::bind(&MidiDeviceMt32::Render, this);
-	renderer          = std::thread(render);
+	renderer          = std::jthread(render, this);
 	set_thread_name(renderer, "dosbox:mt32");
 
 	// Start playback
@@ -778,7 +778,11 @@ MidiDeviceMt32::~MidiDeviceMt32()
 		channel->Enable(false);
 	}
 
-	// Stop queueing new MIDI work and audio frames
+	// Stop queueing new MIDI work and audio frames.
+	//
+	// std::jthread's destructor calls request_stop() + join()
+	// automatically, but we still need this to break the outer while loop
+	// in `Render()`.
 	work_fifo.Stop();
 	audio_frame_fifo.Stop();
 
@@ -786,11 +790,6 @@ MidiDeviceMt32::~MidiDeviceMt32()
 	// `work_fifo` alone does not notify it); once unblocked it sees
 	// `work_fifo` has stopped and exits its loop cleanly.
 	Resume();
-
-	// Wait for the rendering thread to finish
-	if (renderer.joinable()) {
-		renderer.join();
-	}
 
 	// Stop the synthesizer
 	if (service) {
@@ -952,10 +951,10 @@ void MidiDeviceMt32::ProcessWorkFromFifo()
 }
 
 // Keep the FIFO populated with freshly rendered buffers
-void MidiDeviceMt32::Render()
+void MidiDeviceMt32::Render(std::stop_token token)
 {
 	while (work_fifo.IsRunning()) {
-		if (pauser.ParkIfPaused(audio_frame_fifo)) {
+		if (pauser.ParkIfPaused(audio_frame_fifo, token)) {
 			continue;
 		}
 
