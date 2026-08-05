@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstring>
 
+#include "automap/automap.h"
 #include "cpu/callback.h"
 #include "cpu/cpu.h"
 #include "cpu/paging.h"
@@ -432,6 +433,8 @@ bool DOS_Execute(char * name,PhysPt block_pt,uint8_t flags) {
 	}
 	delete [] loadbuf;
 	DOS_CloseFile(fhandle);
+
+	AUTOMAP_NotifyProgramLoad(name, loadseg, check_cast<uint32_t>(headersize));
 
 	/* Setup a psp */
 	if (flags!=OVERLAY) {
