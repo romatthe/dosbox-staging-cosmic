@@ -20,6 +20,7 @@
 #include "private/common.h"
 
 #include "audio/mixer.h"
+#include "automap/automap.h"
 #include "capture/capture.h"
 #include "config/config.h"
 #include "config/setup.h"
@@ -1163,6 +1164,8 @@ void GFX_EndUpdate()
 	// a "cooperative-multitasking" fashion at the end of each emulated 1ms
 	// tick.
 	sdl.draw.updating_framebuffer = false;
+
+	AUTOMAP_MaybeRender();
 }
 
 uint32_t GFX_MakePixel(const uint8_t red, const uint8_t green, const uint8_t blue)
