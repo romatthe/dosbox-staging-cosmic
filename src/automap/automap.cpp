@@ -62,17 +62,13 @@ void init_config_settings(SectionProp& section)
 	        "dungeon level while 'Wizardry VI: Bane of the Cosmic Forge' is\n"
 	        "running. The window has no effect on any other program.");
 
-	bool_prop = section.AddBool("automap_hide_in_dark_zones",
-	                            WhenIdle,
-	                            true);
+	bool_prop = section.AddBool("automap_hide_in_dark_zones", WhenIdle, true);
 	assert(bool_prop);
 	bool_prop->SetHelp(
 	        "Hide the automap in dungeon areas the game treats as dark ('on'\n"
 	        "by default). Turn this off to map those areas regardless.");
 
-	auto int_prop = section.AddInt("automap_window_width",
-	                               OnlyAtStart,
-	                               512);
+	auto int_prop = section.AddInt("automap_window_width", OnlyAtStart, 512);
 	assert(int_prop);
 	int_prop->SetMinMax(2, 4096);
 	int_prop->SetHelp(
@@ -95,8 +91,7 @@ void create_window()
 	                                  SDL_WINDOW_RESIZABLE);
 
 	if (!automap.window) {
-		LOG_WARNING("AUTOMAP: Failed to create window: %s",
-		            SDL_GetError());
+		LOG_WARNING("AUTOMAP: Failed to create window: %s", SDL_GetError());
 	}
 }
 

@@ -24,6 +24,7 @@
 
 #include "audio/disk_noise.h"
 #include "audio/mixer.h"
+#include "automap/automap.h"
 #include "capture/capture.h"
 #include "config/config.h"
 #include "config/setup.h"
@@ -1593,6 +1594,7 @@ void DOSBOX_InitModuleConfigsAndMessages()
 	CPU_AddConfigSection(control);
 	VOODOO_AddConfigSection(control);
 	CAPTURE_AddConfigSection(control);
+	AUTOMAP_AddConfigSection(control);
 	MOUSE_AddConfigSection(control);
 	MIXER_AddConfigSection(control);
 
@@ -1664,6 +1666,7 @@ void DOSBOX_InitModules()
 
 	VOODOO_Init();
 	CAPTURE_Init();
+	AUTOMAP_Init();
 
 	MIXER_Init();
 	MIDI_Init();

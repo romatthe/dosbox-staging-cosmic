@@ -28,8 +28,7 @@ void AUTOMAP_Init();
 // Called when the guest executes a program, before its PSP is set up.
 // `headersize` is in bytes.
 void AUTOMAP_NotifyProgramLoad(const std::string_view name,
-                               const uint16_t loadseg,
-                               const uint32_t headersize);
+                               const uint16_t loadseg, const uint32_t headersize);
 
 // Called for every file the guest opens or creates, so both are on hot paths
 // and must stay cheap. `dos_path` is the DOS-canonical path.
