@@ -2504,6 +2504,11 @@ bool GFX_PollAndHandleEvents()
 			continue;
 		}
 #endif
+		if (AUTOMAP_IsOwnEvent(event)) {
+			AUTOMAP_HandleEvent(event);
+			continue;
+		}
+
 		if (is_user_event(event)) {
 			handle_user_event(event);
 			continue;
