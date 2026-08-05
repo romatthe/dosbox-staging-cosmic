@@ -12,6 +12,7 @@
 #include <ctime>
 
 #include "dosbox.h"
+#include "automap/automap.h"
 #include "dos_windows.h"
 #include "ints/bios.h"
 #include "hardware/memory.h"
@@ -815,6 +816,7 @@ bool DOS_CreateFile(const char* name, FatAttributeFlags attributes,
 		Files[handle]->SetDrive(drive);
 		Files[handle]->AddRef();
 		if (!fcb) psp.SetFileHandle(*entry,handle);
+		AUTOMAP_NotifyFileCreated(fullname);
 		return true;
 	} else {
 		if (!PathExists(name)) DOS_SetError(DOSERR_PATH_NOT_FOUND);
@@ -888,6 +890,7 @@ bool DOS_OpenFile(const char* name, uint8_t flags, uint16_t* entry, bool fcb)
 	if (Files[handle]) {
 		Files[handle]->AddRef();
 		if (!fcb) psp.SetFileHandle(*entry,handle);
+		AUTOMAP_NotifyFileOpened(fullname);
 		return true;
 	} else {
 		//Test if file exists, but opened in read-write mode (and writeprotected)
