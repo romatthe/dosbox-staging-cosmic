@@ -1,4 +1,5 @@
 add_subdirectory(audio)
+add_subdirectory(automap)
 add_subdirectory(capture)
 add_subdirectory(config)
 add_subdirectory(cpu)
