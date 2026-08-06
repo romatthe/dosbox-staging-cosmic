@@ -10,6 +10,7 @@
 #include <string>
 
 #include "automap_wiz6.h"
+#include "automap_wiz6_render.h"
 #include "config/setup.h"
 #include "dosbox.h"
 #include "dosbox_config.h"
@@ -42,6 +43,15 @@ struct AutomapState {
 	// it, so it can be shown again.
 	SDL_Window* window     = nullptr;
 	SDL_Renderer* renderer = nullptr;
+
+	// Streaming texture the module's surface is uploaded into, and the size
+	// it was created at, so a differently sized surface reallocates it.
+	SDL_Texture* texture = nullptr;
+
+	struct {
+		int width  = 0;
+		int height = 0;
+	} texture_size = {};
 
 	// The level the window title currently names, if any.
 	std::optional<int> titled_level = {};
@@ -152,6 +162,10 @@ void create_window()
 
 	// The emulator's main thread is waiting behind every present.
 	SDL_SetRenderVSync(automap.renderer, 0);
+
+	if (!wiz6::InitTileAtlas()) {
+		LOG_WARNING("AUTOMAP: Continuing without tiles; the map will be blank");
+	}
 
 	LOG_MSG("AUTOMAP: Opened automap window using the '%s' renderer",
 	        SDL_GetRendererName(automap.renderer));
@@ -301,16 +315,57 @@ void log_state(const std::optional<wiz6::PartyPosition>& position)
 }
 #endif
 
+// Uploads a module-owned surface into the streaming texture, reallocating it
+// when the surface changes size. Keeping the map on the CPU side and treating
+// the renderer as nothing but a way to get it on screen is what preserves the
+// option of compositing the map into the emulator's window later.
+bool upload(const SDL_Surface& surface)
+{
+	assert(automap.renderer);
+
+	if (automap.texture_size.width != surface.w ||
+	    automap.texture_size.height != surface.h) {
+
+		if (automap.texture) {
+			SDL_DestroyTexture(automap.texture);
+		}
+
+		automap.texture = SDL_CreateTexture(automap.renderer,
+		                                    surface.format,
+		                                    SDL_TEXTUREACCESS_STREAMING,
+		                                    surface.w,
+		                                    surface.h);
+		if (!automap.texture) {
+			LOG_WARNING("AUTOMAP: Failed to create texture: %s",
+			            SDL_GetError());
+			automap.texture_size = {};
+			return false;
+		}
+
+		// The map is pixel art at a fixed tile size; smoothing it would
+		// blur the one-pixel walls into the floor.
+		SDL_SetTextureScaleMode(automap.texture, SDL_SCALEMODE_NEAREST);
+
+		automap.texture_size = {surface.w, surface.h};
+	}
+
+	return SDL_UpdateTexture(automap.texture, nullptr, surface.pixels, surface.pitch);
+}
+
 void present()
 {
 	assert(automap.renderer);
 
-	// TODO Phase 3: upload the module-owned map surface into a streaming
-	// texture and draw it here. Keeping the map in a CPU-side surface is
-	// what preserves the option of compositing it into the emulator window
-	// later; this renderer only presents it.
 	SDL_SetRenderDrawColor(automap.renderer, 0, 0, 0, SDL_ALPHA_OPAQUE);
 	SDL_RenderClear(automap.renderer);
+
+	// TODO Phase 3: this shows the bare tile sheet. The next commit
+	// rasterises the map into a surface of its own and presents that
+	// instead; the upload path below does not change.
+	if (const auto* atlas = wiz6::GetTileAtlas(); atlas && upload(*atlas)) {
+		SDL_RenderTexture(automap.renderer, automap.texture, nullptr, nullptr);
+	}
+
 	SDL_RenderPresent(automap.renderer);
 
 	automap.last_present_ms = SDL_GetTicks();
