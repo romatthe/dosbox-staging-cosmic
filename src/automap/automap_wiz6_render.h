@@ -14,14 +14,19 @@ struct SDL_Surface;
 namespace wiz6 {
 
 // Decodes the tile sheet into a surface. Safe to call more than once; returns
-// false only if the surface could not be created, in which case there is
+// false only if the tiles could not be prepared, in which case there is
 // nothing to draw with.
 bool InitTileAtlas();
 
 void FreeTileAtlas();
 
-// The decoded tile sheet, or nullptr before InitTileAtlas() has succeeded.
-SDL_Surface* GetTileAtlas();
+// Draws the current map at the given size, centred on the party, and returns
+// the surface it was drawn into. Returns nullptr when there is nothing to draw
+// -- no game, no party in the dungeon, or the party standing in a dark zone.
+//
+// The surface belongs to this module and is reused between calls, so the
+// caller must neither free it nor hold on to it across a size change.
+SDL_Surface* RenderMap(const int width_px, const int height_px);
 
 } // namespace wiz6
 

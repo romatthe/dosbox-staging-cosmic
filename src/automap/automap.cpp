@@ -359,10 +359,14 @@ void present()
 	SDL_SetRenderDrawColor(automap.renderer, 0, 0, 0, SDL_ALPHA_OPAQUE);
 	SDL_RenderClear(automap.renderer);
 
-	// TODO Phase 3: this shows the bare tile sheet. The next commit
-	// rasterises the map into a surface of its own and presents that
-	// instead; the upload path below does not change.
-	if (const auto* atlas = wiz6::GetTileAtlas(); atlas && upload(*atlas)) {
+	// The map is drawn at the window's own pixel size, so it stays 1:1 and
+	// the texture only ever scales when the window is mid-resize.
+	int width  = 0;
+	int height = 0;
+
+	SDL_GetWindowSizeInPixels(automap.window, &width, &height);
+
+	if (const auto* map = wiz6::RenderMap(width, height); map && upload(*map)) {
 		SDL_RenderTexture(automap.renderer, automap.texture, nullptr, nullptr);
 	}
 

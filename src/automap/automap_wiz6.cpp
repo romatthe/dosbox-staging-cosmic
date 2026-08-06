@@ -261,30 +261,6 @@ bool west_edge_is_open(const int level, const int abs_x, const int abs_y)
 	return east_edge_is_open(level, abs_x - 1, abs_y);
 }
 
-// Two levels of the game have areas the party cannot see in, and the original
-// hardcodes which -- that is game knowledge, not a heuristic.
-bool is_dark_zone(const int level, const int quadrant, const int x, const int y)
-{
-	if (!hide_in_dark_zones || (level != 5 && level != 12)) {
-		return false;
-	}
-
-	const auto square = GetSquare(level, quadrant, x, y);
-
-	if (!square) {
-		return false;
-	}
-
-	// This reads backwards and is meant to: on those two levels it is the
-	// ordinary floor squares -- the ones the original draws with its dark
-	// tile, pits excepted -- that stay visible, and everything else that
-	// is hidden.
-	const auto drawn_as_dark_tile = square->is_dark_floor &&
-	                                square->feature != PitFeature;
-
-	return !drawn_as_dark_tile;
-}
-
 // Visibility is only ever upgraded: walking through a square makes it visited
 // for good, and a square seen from next door stays seen until it is walked.
 void mark_visibility(const int level, const int abs_x, const int abs_y,
@@ -296,7 +272,7 @@ void mark_visibility(const int level, const int abs_x, const int abs_y,
 		return;
 	}
 
-	if (is_dark_zone(level, location->quadrant, location->x, location->y)) {
+	if (IsDarkZone(level, location->quadrant, location->x, location->y)) {
 		return;
 	}
 
@@ -506,6 +482,29 @@ Visibility GetVisibility(const int level, const int quadrant, const int x, const
 	                 [static_cast<size_t>(x)][static_cast<size_t>(y)];
 }
 
+// Two levels of the game have areas the party cannot see in, and the original
+// hardcodes which -- that is game knowledge, not a heuristic.
+bool IsDarkZone(const int level, const int quadrant, const int x, const int y)
+{
+	if (!hide_in_dark_zones || (level != 5 && level != 12)) {
+		return false;
+	}
+
+	const auto square = GetSquare(level, quadrant, x, y);
+
+	if (!square) {
+		return false;
+	}
+
+	// This reads backwards and is meant to: on those two levels it is the
+	// ordinary floor squares -- the ones the original draws with its dark
+	// tile, pits excepted -- that stay visible, and everything else that
+	// is hidden.
+	const auto drawn_as_dark_tile = square->is_dark_floor &&
+	                                square->feature != PitFeature;
+
+	return !drawn_as_dark_tile;
+}
 void SetHideInDarkZones(const bool enabled)
 {
 	hide_in_dark_zones = enabled;

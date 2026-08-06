@@ -107,6 +107,11 @@ Visibility GetVisibility(const int level, const int quadrant, const int x,
 // levels the game treats as dark are left off the map.
 void SetHideInDarkZones(const bool enabled);
 
+// Whether a square is somewhere the map is meant to stay blank. Only ever true
+// on the two levels the game gives dark areas, and only while the setting
+// above is on.
+bool IsDarkZone(const int level, const int quadrant, const int x, const int y);
+
 // The game's own name for a dungeon level. Empty for an out-of-range index.
 std::string_view LevelName(const int level);
 
