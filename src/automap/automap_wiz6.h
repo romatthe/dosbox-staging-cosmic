@@ -41,12 +41,51 @@ struct PartyPosition {
 	int x         = 0;
 	int y         = 0;
 	Facing facing = Facing::North;
+
+	bool operator==(const PartyPosition& other) const = default;
 };
 
 // The party's position, or nothing whenever there is no map to draw: the game
 // is not running, or it is showing the title screen, a menu, or character
 // creation rather than the dungeon.
 std::optional<PartyPosition> GetPartyPosition();
+
+// Polls the game and, when the party has moved, copies the current level's map
+// data out of guest memory into the cache the automap reads. Call once per
+// rendered frame; returns the party's position, as GetPartyPosition() does.
+std::optional<PartyPosition> Update();
+
+// One square of a level, unpacked from the packed bit arrays the game keeps it
+// in.
+struct Square {
+	// The state of the square's north and east edges. Under 2 means the
+	// edge can be seen and walked through; the exact values tell doors and
+	// portcullises apart, which only matters when drawing.
+	int north_wall = 0;
+	int east_wall  = 0;
+
+	// 14 is a pit. The rest are stairs, fountains and similar, decoded
+	// when drawing.
+	int feature           = 0;
+	int feature_direction = 0;
+
+	bool has_floor = false;
+	bool has_roof  = false;
+};
+
+// A square of the cached map. Nothing if any coordinate is out of range; a
+// level the party has never entered reads back as all zeroes.
+std::optional<Square> GetSquare(const int level, const int quadrant,
+                                const int x, const int y);
+
+// The level-absolute coordinates of a quadrant's south-west corner, which is
+// what turns quadrant-relative squares into level-wide ones.
+struct QuadrantOrigin {
+	int x = 0;
+	int y = 0;
+};
+
+std::optional<QuadrantOrigin> GetQuadrantOrigin(const int level, const int quadrant);
 
 // The game's own name for a dungeon level. Empty for an out-of-range index.
 std::string_view LevelName(const int level);

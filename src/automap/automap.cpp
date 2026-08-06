@@ -20,10 +20,10 @@
 
 CHECK_NARROWING();
 
-// Set to 1 to log the party's position once a second. The state model has no
-// other visible output until the map itself is drawn, so this is how it gets
-// checked against the running game.
-#define AUTOMAP_LOG_PARTY_POSITION 0
+// Set to 1 to log the party's position and its surroundings once a second. The
+// state model has no other visible output until the map itself is drawn, so
+// this is how it gets checked against the running game.
+#define AUTOMAP_LOG_STATE 0
 
 namespace {
 
@@ -169,11 +169,9 @@ bool is_window_on_screen()
 
 // The level name is the only label the automap has -- there is no text
 // rendering -- so the title bar is where it goes.
-void update_window_title()
+void update_window_title(const std::optional<wiz6::PartyPosition>& position)
 {
 	assert(automap.window);
-
-	const auto position = wiz6::GetPartyPosition();
 
 	const auto level = position ? std::optional(position->level) : std::nullopt;
 
@@ -194,8 +192,74 @@ void update_window_title()
 	SDL_SetWindowTitle(automap.window, title.c_str());
 }
 
-#if AUTOMAP_LOG_PARTY_POSITION
-void log_party_position()
+#if AUTOMAP_LOG_STATE
+char square_char(const wiz6::Square& square,
+                 const std::optional<wiz6::Facing> party_facing)
+{
+	if (party_facing) {
+		constexpr std::array PartyChars = {'^', '>', 'v', '<'};
+		return PartyChars[static_cast<size_t>(*party_facing)];
+	}
+
+	constexpr int Pit = 14;
+
+	if (square.feature == Pit) {
+		return 'P';
+	}
+	if (square.feature != 0) {
+		// One hex digit, so the feature's raw value stays visible.
+		return "0123456789ABCDEF"[square.feature];
+	}
+
+	return square.has_floor ? '.' : '#';
+}
+
+// Draws the quadrant the party is standing in as text. The map data is packed
+// into bit arrays at six different widths, so seeing it come back out as a
+// maze -- with the walls where the game's own view says they are -- is what
+// confirms the unpacking is right.
+void log_current_quadrant(const wiz6::PartyPosition& position)
+{
+	// The quadrant's own west and south edges belong to its neighbours, so
+	// they are left blank.
+	for (auto y = wiz6::QuadrantSize - 1; y >= 0; --y) {
+		std::string edges   = " ";
+		std::string squares = " ";
+
+		for (auto x = 0; x < wiz6::QuadrantSize; ++x) {
+			const auto square = wiz6::GetSquare(position.level,
+			                                    position.quadrant,
+			                                    x,
+			                                    y);
+			if (!square) {
+				return;
+			}
+
+			const auto west = x > 0 ? wiz6::GetSquare(position.level,
+			                                          position.quadrant,
+			                                          x - 1,
+			                                          y)
+			                        : std::nullopt;
+
+			const auto is_party = x == position.x && y == position.y;
+
+			edges += square->north_wall >= 2 ? "+---" : "+   ";
+			squares += west && west->east_wall >= 2 ? "| " : "  ";
+			squares += square_char(*square,
+			                       is_party ? std::optional(position.facing)
+			                                : std::nullopt);
+			squares += ' ';
+		}
+
+		edges += '+';
+		squares += ' ';
+
+		LOG_MSG("AUTOMAP: %s", edges.c_str());
+		LOG_MSG("AUTOMAP: %s", squares.c_str());
+	}
+}
+
+void log_state(const std::optional<wiz6::PartyPosition>& position)
 {
 	constexpr uint64_t LogIntervalMs = 1000;
 
@@ -205,8 +269,6 @@ void log_party_position()
 		return;
 	}
 	last_log_ms = SDL_GetTicks();
-
-	const auto position = wiz6::GetPartyPosition();
 
 	if (!position) {
 		LOG_MSG("AUTOMAP: Party is not in the dungeon");
@@ -222,6 +284,8 @@ void log_party_position()
 	        position->x,
 	        position->y,
 	        FacingNames[static_cast<size_t>(position->facing)]);
+
+	log_current_quadrant(*position);
 }
 #endif
 
@@ -294,11 +358,16 @@ void AUTOMAP_MaybeRender()
 		return;
 	}
 
-#if AUTOMAP_LOG_PARTY_POSITION
-	log_party_position();
+	// The state model has to keep up even while the window is hidden or
+	// minimised, or the map would end up with holes wherever the user had
+	// it closed.
+	const auto position = wiz6::Update();
+
+#if AUTOMAP_LOG_STATE
+	log_state(position);
 #endif
 
-	update_window_title();
+	update_window_title(position);
 
 	if (!is_window_on_screen()) {
 		return;
