@@ -4,7 +4,10 @@
 
 #include "automap.h"
 
+#include <array>
 #include <cassert>
+#include <optional>
+#include <string>
 
 #include "automap_wiz6.h"
 #include "config/setup.h"
@@ -16,6 +19,11 @@
 #include <SDL3/SDL.h>
 
 CHECK_NARROWING();
+
+// Set to 1 to log the party's position once a second. The state model has no
+// other visible output until the map itself is drawn, so this is how it gets
+// checked against the running game.
+#define AUTOMAP_LOG_PARTY_POSITION 0
 
 namespace {
 
@@ -34,6 +42,9 @@ struct AutomapState {
 	// it, so it can be shown again.
 	SDL_Window* window     = nullptr;
 	SDL_Renderer* renderer = nullptr;
+
+	// The level the window title currently names, if any.
+	std::optional<int> titled_level = {};
 
 	uint64_t last_present_ms = 0;
 };
@@ -61,6 +72,8 @@ constexpr auto RendererDriver = "gpu";
 // GFX_EndUpdate can run at the emulated refresh rate. A map redraw does not
 // need to be faster than this.
 constexpr uint64_t MinPresentIntervalMs = 33;
+
+constexpr auto WindowTitle = "DOSBox Staging Automap";
 
 void read_settings(const SectionProp& section)
 {
@@ -111,7 +124,7 @@ void create_window()
 {
 	assert(!automap.window);
 
-	automap.window = SDL_CreateWindow("DOSBox Staging Automap",
+	automap.window = SDL_CreateWindow(WindowTitle,
 	                                  automap.settings.window_width_px,
 	                                  automap.settings.window_height_px,
 	                                  SDL_WINDOW_RESIZABLE);
@@ -153,6 +166,64 @@ bool is_window_on_screen()
 
 	return (SDL_GetWindowFlags(automap.window) & OffScreen) == 0;
 }
+
+// The level name is the only label the automap has -- there is no text
+// rendering -- so the title bar is where it goes.
+void update_window_title()
+{
+	assert(automap.window);
+
+	const auto position = wiz6::GetPartyPosition();
+
+	const auto level = position ? std::optional(position->level) : std::nullopt;
+
+	// This runs once per emulated frame, and setting the title is a round
+	// trip to the window manager.
+	if (level == automap.titled_level) {
+		return;
+	}
+	automap.titled_level = level;
+
+	auto title = std::string(WindowTitle);
+
+	if (level) {
+		title += " - " + std::to_string(*level) + ": " +
+		         std::string(wiz6::LevelName(*level));
+	}
+
+	SDL_SetWindowTitle(automap.window, title.c_str());
+}
+
+#if AUTOMAP_LOG_PARTY_POSITION
+void log_party_position()
+{
+	constexpr uint64_t LogIntervalMs = 1000;
+
+	static uint64_t last_log_ms = 0;
+
+	if (SDL_GetTicks() - last_log_ms < LogIntervalMs) {
+		return;
+	}
+	last_log_ms = SDL_GetTicks();
+
+	const auto position = wiz6::GetPartyPosition();
+
+	if (!position) {
+		LOG_MSG("AUTOMAP: Party is not in the dungeon");
+		return;
+	}
+
+	constexpr std::array FacingNames = {"north", "east", "south", "west"};
+
+	LOG_MSG("AUTOMAP: Level %d (%s), quadrant %2d, x %d, y %d, facing %s",
+	        position->level,
+	        std::string(wiz6::LevelName(position->level)).c_str(),
+	        position->quadrant,
+	        position->x,
+	        position->y,
+	        FacingNames[static_cast<size_t>(position->facing)]);
+}
+#endif
 
 void present()
 {
@@ -219,7 +290,17 @@ void AUTOMAP_NotifyFileCreated([[maybe_unused]] const std::string_view dos_path)
 
 void AUTOMAP_MaybeRender()
 {
-	if (!automap.window || !is_window_on_screen()) {
+	if (!automap.window) {
+		return;
+	}
+
+#if AUTOMAP_LOG_PARTY_POSITION
+	log_party_position();
+#endif
+
+	update_window_title();
+
+	if (!is_window_on_screen()) {
 		return;
 	}
 
