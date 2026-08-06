@@ -6,6 +6,7 @@
 
 #include <cassert>
 
+#include "automap_wiz6.h"
 #include "config/setup.h"
 #include "dosbox.h"
 #include "dosbox_config.h"
@@ -185,17 +186,24 @@ void AUTOMAP_Init()
 	read_settings(*get_section("automap"));
 }
 
-void AUTOMAP_NotifyProgramLoad([[maybe_unused]] const std::string_view name,
-                               [[maybe_unused]] const uint16_t loadseg,
-                               [[maybe_unused]] const uint32_t headersize)
+void AUTOMAP_NotifyProgramLoad(const std::string_view name,
+                               const uint16_t loadseg, const uint32_t headersize)
 {
-	if (!automap.settings.enabled || automap.window) {
+	if (!automap.settings.enabled) {
 		return;
 	}
 
-	// TODO Phase 2: only create the window once the loaded image has been
-	// confirmed to be Wizardry VI via its "WMAZE" signature.
-	create_window();
+	// Every program load is a candidate, because the guest can quit the
+	// game and start it again within one session.
+	if (!wiz6::DetectGame(name, loadseg, headersize)) {
+		return;
+	}
+
+	if (!automap.window) {
+		create_window();
+	} else {
+		SDL_ShowWindow(automap.window);
+	}
 }
 
 void AUTOMAP_NotifyFileOpened([[maybe_unused]] const std::string_view dos_path)
