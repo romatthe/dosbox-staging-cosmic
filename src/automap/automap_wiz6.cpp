@@ -105,6 +105,20 @@ std::array<LevelCache, LevelCount> level_cache = {};
 // the party has actually moved.
 std::optional<PartyPosition> cached_position = {};
 
+// Indexed [level][quadrant][x][y], which is also the order the MAP.VIS file
+// stores it in. 12 KB.
+using QuadrantVisibility = std::array<std::array<Visibility, QuadrantSize>, QuadrantSize>;
+
+std::array<std::array<QuadrantVisibility, QuadrantCount>, LevelCount> visibility = {};
+
+bool hide_in_dark_zones = true;
+
+// The one feature value the visibility rules care about.
+constexpr int PitFeature = 14;
+
+// An edge with a value below this can be seen and walked through.
+constexpr int OpenEdge = 2;
+
 std::optional<uint16_t> read_word(const PhysPt offset)
 {
 	assert(data_segment_addr);
@@ -177,6 +191,159 @@ void refresh_level_cache(const int level)
 	read_array(FeatureDirectionOffset, cache.feature_directions);
 	read_array(FloorOffset, cache.floor);
 	read_array(RoofOffset, cache.roof);
+}
+
+// Which quadrant a level-absolute square falls in, and where in it. Quadrants
+// do not tile the whole level, so a coordinate can fall outside every one.
+struct QuadrantLocation {
+	int quadrant = 0;
+	int x        = 0;
+	int y        = 0;
+};
+
+std::optional<QuadrantLocation> abs_to_quadrant(const int level,
+                                                const int abs_x, const int abs_y)
+{
+	for (auto quadrant = 0; quadrant < QuadrantCount; ++quadrant) {
+		const auto origin = GetQuadrantOrigin(level, quadrant);
+
+		if (!origin) {
+			continue;
+		}
+
+		const auto x = abs_x - origin->x;
+		const auto y = abs_y - origin->y;
+
+		if (x >= 0 && x < QuadrantSize && y >= 0 && y < QuadrantSize) {
+			return QuadrantLocation{quadrant, x, y};
+		}
+	}
+
+	return {};
+}
+
+// Squares are addressed absolutely from here on, because the square next to
+// this one can be in the next quadrant.
+std::optional<Square> square_at(const int level, const int abs_x, const int abs_y)
+{
+	const auto location = abs_to_quadrant(level, abs_x, abs_y);
+
+	if (!location) {
+		return {};
+	}
+
+	return GetSquare(level, location->quadrant, location->x, location->y);
+}
+
+// A square only stores its own north and east edges, so the other two are read
+// from the neighbours that own them.
+bool north_edge_is_open(const int level, const int abs_x, const int abs_y)
+{
+	const auto square = square_at(level, abs_x, abs_y);
+
+	return square && square->north_wall < OpenEdge;
+}
+
+bool east_edge_is_open(const int level, const int abs_x, const int abs_y)
+{
+	const auto square = square_at(level, abs_x, abs_y);
+
+	return square && square->east_wall < OpenEdge;
+}
+
+bool south_edge_is_open(const int level, const int abs_x, const int abs_y)
+{
+	return north_edge_is_open(level, abs_x, abs_y - 1);
+}
+
+bool west_edge_is_open(const int level, const int abs_x, const int abs_y)
+{
+	return east_edge_is_open(level, abs_x - 1, abs_y);
+}
+
+// Two levels of the game have areas the party cannot see in, and the original
+// hardcodes which -- that is game knowledge, not a heuristic.
+bool is_dark_zone(const int level, const int quadrant, const int x, const int y)
+{
+	if (!hide_in_dark_zones || (level != 5 && level != 12)) {
+		return false;
+	}
+
+	const auto square = GetSquare(level, quadrant, x, y);
+
+	if (!square) {
+		return false;
+	}
+
+	// This reads backwards and is meant to: on those two levels it is the
+	// ordinary floor squares -- the ones the original draws with its dark
+	// tile, pits excepted -- that stay visible, and everything else that
+	// is hidden.
+	const auto drawn_as_dark_tile = square->is_dark_floor &&
+	                                square->feature != PitFeature;
+
+	return !drawn_as_dark_tile;
+}
+
+// Visibility is only ever upgraded: walking through a square makes it visited
+// for good, and a square seen from next door stays seen until it is walked.
+void mark_visibility(const int level, const int abs_x, const int abs_y,
+                     const Visibility new_visibility)
+{
+	const auto location = abs_to_quadrant(level, abs_x, abs_y);
+
+	if (!location) {
+		return;
+	}
+
+	if (is_dark_zone(level, location->quadrant, location->x, location->y)) {
+		return;
+	}
+
+	auto& stored = visibility[static_cast<size_t>(level)][static_cast<size_t>(
+	        location->quadrant)][static_cast<size_t>(location->x)]
+	                         [static_cast<size_t>(location->y)];
+
+	if (stored == Visibility::Unseen || new_visibility == Visibility::Visited) {
+		stored = new_visibility;
+	}
+}
+
+// Records what the party can see from where it stands: its own square, plus
+// each of the four next to it whose shared edge is open.
+void update_visibility(const PartyPosition& position)
+{
+	const auto origin = GetQuadrantOrigin(position.level, position.quadrant);
+
+	if (!origin) {
+		return;
+	}
+
+	const auto level = position.level;
+	const auto x     = origin->x + position.x;
+	const auto y     = origin->y + position.y;
+
+	mark_visibility(level, x, y, Visibility::Visited);
+
+	const struct {
+		int dx;
+		int dy;
+		bool is_open;
+	} neighbours[] = {
+	        { 0,  1, north_edge_is_open(level, x, y)},
+	        { 1,  0,  east_edge_is_open(level, x, y)},
+	        { 0, -1, south_edge_is_open(level, x, y)},
+	        {-1,  0,  west_edge_is_open(level, x, y)},
+	};
+
+	for (const auto& neighbour : neighbours) {
+		if (neighbour.is_open) {
+			mark_visibility(level,
+			                x + neighbour.dx,
+			                y + neighbour.dy,
+			                Visibility::Seen);
+		}
+	}
 }
 
 // The game drives its whole screen flow from one variable; these are the
@@ -320,7 +487,28 @@ std::optional<PartyPosition> Update()
 		cached_position = position;
 	}
 
+	// Deliberately every frame, not just on movement: the map data the
+	// dark-zone test reads can change under a stationary party.
+	update_visibility(*position);
+
 	return position;
+}
+
+Visibility GetVisibility(const int level, const int quadrant, const int x, const int y)
+{
+	if (level < 0 || level >= LevelCount || quadrant < 0 ||
+	    quadrant >= QuadrantCount || x < 0 || x >= QuadrantSize || y < 0 ||
+	    y >= QuadrantSize) {
+		return Visibility::Unseen;
+	}
+
+	return visibility[static_cast<size_t>(level)][static_cast<size_t>(quadrant)]
+	                 [static_cast<size_t>(x)][static_cast<size_t>(y)];
+}
+
+void SetHideInDarkZones(const bool enabled)
+{
+	hide_in_dark_zones = enabled;
 }
 
 std::optional<Square> GetSquare(const int level, const int quadrant,
@@ -342,7 +530,7 @@ std::optional<Square> GetSquare(const int level, const int quadrant,
 	              get_packed_element(cache.vertical_walls, index, 2),
 	              get_packed_element(cache.features, index, 4),
 	              get_packed_element(cache.feature_directions, index, 2),
-	              get_packed_element(cache.floor, index, 1) != 0,
+	              get_packed_element(cache.floor, index, 1) == 0,
 	              get_packed_element(cache.roof, index, 1) != 0};
 }
 

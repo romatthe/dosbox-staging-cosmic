@@ -69,8 +69,13 @@ struct Square {
 	int feature           = 0;
 	int feature_direction = 0;
 
-	bool has_floor = false;
-	bool has_roof  = false;
+	// Named for what the original draws rather than for what the bits are
+	// called in its comments, which is misleading: the "floor map" bit is
+	// clear for an ordinary indoor floor -- by far the common case, and
+	// drawn with its dark tile -- and set, together with a roof, for
+	// water. Neither bit says whether a square has a floor at all.
+	bool is_dark_floor = false;
+	bool has_roof      = false;
 };
 
 // A square of the cached map. Nothing if any coordinate is out of range; a
@@ -86,6 +91,21 @@ struct QuadrantOrigin {
 };
 
 std::optional<QuadrantOrigin> GetQuadrantOrigin(const int level, const int quadrant);
+
+// How much of a square the party knows about. The values are written to the
+// automap's MAP.VIS file, so they are fixed.
+enum class Visibility : uint8_t {
+	Unseen  = 0,
+	Visited = 1, // walked through
+	Seen    = 2, // looked into from the square next door
+};
+
+Visibility GetVisibility(const int level, const int quadrant, const int x,
+                         const int y);
+
+// Mirrors the `automap_hide_in_dark_zones` setting: whether squares in the two
+// levels the game treats as dark are left off the map.
+void SetHideInDarkZones(const bool enabled);
 
 // The game's own name for a dungeon level. Empty for an out-of-range index.
 std::string_view LevelName(const int level);

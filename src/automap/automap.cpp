@@ -81,6 +81,8 @@ void read_settings(const SectionProp& section)
 	                    section.GetBool("automap_hide_in_dark_zones"),
 	                    section.GetInt("automap_window_width"),
 	                    section.GetInt("automap_window_height")};
+
+	wiz6::SetHideInDarkZones(automap.settings.hide_in_dark_zones);
 }
 
 void notify_setting_updated(SectionProp& section,
@@ -193,12 +195,16 @@ void update_window_title(const std::optional<wiz6::PartyPosition>& position)
 }
 
 #if AUTOMAP_LOG_STATE
-char square_char(const wiz6::Square& square,
+char square_char(const wiz6::Square& square, const wiz6::Visibility visibility,
                  const std::optional<wiz6::Facing> party_facing)
 {
 	if (party_facing) {
 		constexpr std::array PartyChars = {'^', '>', 'v', '<'};
 		return PartyChars[static_cast<size_t>(*party_facing)];
+	}
+
+	if (visibility == wiz6::Visibility::Unseen) {
+		return ' ';
 	}
 
 	constexpr int Pit = 14;
@@ -207,11 +213,13 @@ char square_char(const wiz6::Square& square,
 		return 'P';
 	}
 	if (square.feature != 0) {
-		// One hex digit, so the feature's raw value stays visible.
+		// One hex digit, so the feature's raw value stays visible. This
+		// hides the square's visibility, which only matters here.
 		return "0123456789ABCDEF"[square.feature];
 	}
 
-	return square.has_floor ? '.' : '#';
+	// A square only looked into from next door has not been walked yet.
+	return visibility == wiz6::Visibility::Visited ? '.' : ':';
 }
 
 // Draws the quadrant the party is standing in as text. The map data is packed
@@ -243,9 +251,13 @@ void log_current_quadrant(const wiz6::PartyPosition& position)
 
 			const auto is_party = x == position.x && y == position.y;
 
+			const auto visibility = wiz6::GetVisibility(
+			        position.level, position.quadrant, x, y);
+
 			edges += square->north_wall >= 2 ? "+---" : "+   ";
 			squares += west && west->east_wall >= 2 ? "| " : "  ";
 			squares += square_char(*square,
+			                       visibility,
 			                       is_party ? std::optional(position.facing)
 			                                : std::nullopt);
 			squares += ' ';
