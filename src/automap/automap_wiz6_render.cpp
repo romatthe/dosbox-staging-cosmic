@@ -124,10 +124,20 @@ SDL_Rect source_rect(const Tile& tile)
 	return {x, y, tile.w, tile.h};
 }
 
+// Whether a tile's transparent pixels show what is underneath.
+//
+// The original enables GL_BLEND in exactly one place, around the party cursor
+// (am_wiz6.cpp:1025). Every other tile is drawn with blending off, so alpha is
+// ignored and the sheet's background pixels are written as opaque black -- the
+// gaps between a staircase's rungs are black in the original, not the floor
+// showing through. Blending everything looks subtly wrong in a way that is
+// hard to place, so this follows the original exactly.
+enum class Blending { Off, On };
+
 // `dimmed` is the original's `dark` flag: a square that has been seen from next
 // door but not walked through is drawn at half brightness.
-void draw_tile(const Tile& tile, const int x, const int y, const int w,
-               const int h, const bool dimmed)
+void draw_tile(const Tile& tile, const int x, const int y, const int w, const int h,
+               const bool dimmed, const Blending blending = Blending::Off)
 {
 	auto* atlas = atlas_for(tile);
 
@@ -147,6 +157,10 @@ void draw_tile(const Tile& tile, const int x, const int y, const int w,
 	const auto brightness = dimmed ? HalfBrightness : FullBrightness;
 
 	SDL_SetSurfaceColorMod(atlas, brightness, brightness, brightness);
+
+	SDL_SetSurfaceBlendMode(atlas,
+	                        blending == Blending::On ? SDL_BLENDMODE_BLEND
+	                                                 : SDL_BLENDMODE_NONE);
 
 	auto source          = source_rect(tile);
 	SDL_Rect destination = {x, y, w, h};
@@ -515,7 +529,8 @@ void draw_party(const PartyPosition& position, const int origin_x, const int ori
 	                   : position.facing == Facing::West  ? CursorLeft
 	                                                      : CursorDown;
 
-	draw_tile(cursor, px, py, SquarePx, SquarePx, false);
+	// The one blended tile, so the floor shows around the arrow.
+	draw_tile(cursor, px, py, SquarePx, SquarePx, false, Blending::On);
 }
 
 bool resize_map_surface(const int width_px, const int height_px)
@@ -592,7 +607,7 @@ bool InitTileAtlas()
 				SDL_FlipSurface(copy, SDL_FLIP_VERTICAL);
 			}
 
-			SDL_SetSurfaceBlendMode(copy, SDL_BLENDMODE_BLEND);
+			// Set per draw; see the Blending note above.
 
 			atlases[static_cast<size_t>(flip_h)][static_cast<size_t>(flip_v)] = copy;
 		}
