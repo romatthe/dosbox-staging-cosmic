@@ -101,10 +101,6 @@ struct LevelCache {
 // the automap can be drawn without the game being on that level.
 std::array<LevelCache, LevelCount> level_cache = {};
 
-// What the cache was last refreshed for. A refresh is only worth doing when
-// the party has actually moved.
-std::optional<PartyPosition> cached_position = {};
-
 // Indexed [level][quadrant][x][y], which is also the order the MAP.VIS file
 // stores it in. 12 KB.
 using QuadrantVisibility = std::array<std::array<Visibility, QuadrantSize>, QuadrantSize>;
@@ -377,11 +373,6 @@ bool DetectGame(const std::string_view name, const uint16_t loadseg,
 {
 	data_segment_addr = {};
 
-	// The cache belongs to whichever run of the game filled it, so a fresh
-	// load has to refresh it even if the party happens to start where the
-	// previous one stood.
-	cached_position = {};
-
 	if (!iequals(dos_basename(name), ExecutableName)) {
 		return false;
 	}
@@ -455,13 +446,21 @@ std::optional<PartyPosition> Update()
 		return {};
 	}
 
-	// A turn on the spot cannot change the map, but the original refreshes
-	// on it too and it costs one block copy, so keep the behaviour: the
-	// game reveals squares as the party looks at them.
-	if (position != cached_position) {
-		refresh_level_cache(position->level);
-		cached_position = position;
-	}
+	// Refreshed every frame, where the original refreshes only when the
+	// party moves.
+	//
+	// The original tests walls by reading guest memory directly and only
+	// keeps this cache for drawing, so a stale cache costs it nothing. This
+	// port tests walls against the cache instead, which makes staleness
+	// visible: the game does not update the level index and the map data
+	// block on the same frame, so a cache filled mid-transition holds the
+	// wrong level's walls. The map corrects itself on the next move, but
+	// visibility never does -- it only ever upgrades -- so a square wrongly
+	// marked "seen" while stepping between levels stays on the map for good.
+	//
+	// Eight block copies of about 1.2 KB each per frame is not worth
+	// optimising to avoid that.
+	refresh_level_cache(position->level);
 
 	// Deliberately every frame, not just on movement: the map data the
 	// dark-zone test reads can change under a stationary party.
