@@ -28,6 +28,14 @@ void FreeTileAtlas();
 // caller must neither free it nor hold on to it across a size change.
 SDL_Surface* RenderMap(const int width_px, const int height_px);
 
+// Pans the map by a mouse drag, given in map pixels, so that the map follows
+// the cursor. The pan lasts only until the party next moves or turns, or until
+// RecentreMap(); it is a look around rather than a mode the map stays in.
+void ScrollMap(const int delta_x_px, const int delta_y_px);
+
+// Drops any pan, putting the party back in the middle of the window.
+void RecentreMap();
+
 } // namespace wiz6
 
 #endif // DOSBOX_AUTOMAP_WIZ6_RENDER_H

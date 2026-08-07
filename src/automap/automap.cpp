@@ -15,6 +15,7 @@
 #include "dosbox.h"
 #include "dosbox_config.h"
 #include "utils/checks.h"
+#include "utils/math_utils.h"
 
 // must be included after dosbox_config.h
 #include <SDL3/SDL.h>
@@ -481,9 +482,44 @@ void AUTOMAP_HandleEvent(const SDL_Event& event)
 	// mouse release.
 	case SDL_EVENT_WINDOW_EXPOSED:
 	case SDL_EVENT_WINDOW_RESIZED:
+	case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
 	case SDL_EVENT_WINDOW_SHOWN:
 	case SDL_EVENT_WINDOW_RESTORED:
 		if (is_window_on_screen()) {
+			present();
+		}
+		break;
+
+	// Dragging with the left button held pans the map. Taking the button
+	// state from the event rather than tracking press and release means a
+	// release that lands outside the window -- which is never delivered
+	// here -- cannot leave the map stuck to the cursor.
+	case SDL_EVENT_MOUSE_MOTION:
+		if ((event.motion.state & SDL_BUTTON_LMASK) != 0) {
+			// Motion arrives in window coordinates while the map is
+			// drawn in pixels, and the two differ on a HiDPI display.
+			const auto density = SDL_GetWindowPixelDensity(automap.window);
+
+			wiz6::ScrollMap(iroundf(event.motion.xrel * density),
+			                iroundf(event.motion.yrel * density));
+
+			// A drag has to keep up with the cursor even when the
+			// guest has stopped producing frames, but a redraw is a
+			// full pass over the level and a mouse can report far
+			// more often than the map needs redrawing. Dropping the
+			// last motion of a drag costs nothing, because the pan
+			// itself is kept and the next frame draws it.
+			if (SDL_GetTicks() - automap.last_present_ms >=
+			    MinPresentIntervalMs) {
+				present();
+			}
+		}
+		break;
+
+	// Middle-click puts the party back in the middle of the window.
+	case SDL_EVENT_MOUSE_BUTTON_UP:
+		if (event.button.button == SDL_BUTTON_MIDDLE) {
+			wiz6::RecentreMap();
 			present();
 		}
 		break;

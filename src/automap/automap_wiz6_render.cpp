@@ -4,6 +4,7 @@
 
 #include "automap_wiz6_render.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <optional>
@@ -103,6 +104,17 @@ constexpr Tile CursorLeft     = {157, 2, 14, 11, true, true};
 // on top of this -- the art is already here and the feature value is already
 // decoded -- and worth trying if the original's map ever feels like it is
 // missing something. It is left out only so v1 matches the original.
+
+// How far a drag has pushed the map away from the party. The original clamps
+// this to a whole level's worth of squares in each direction, which is far
+// enough to bring any part of the level under the window from anywhere in it.
+constexpr int MaxScrollPx = SquarePx * LevelRows;
+
+SDL_Point scroll_px = {};
+
+// The party's position as of the last frame drawn, so that a move can be
+// spotted and the pan dropped.
+std::optional<PartyPosition> last_drawn_position = {};
 
 SDL_Surface* map_surface = nullptr;
 
@@ -533,6 +545,17 @@ void draw_party(const PartyPosition& position, const int origin_x, const int ori
 	draw_tile(cursor, px, py, SquarePx, SquarePx, false, Blending::On);
 }
 
+// Whether there is a map to look at at all. The original blanks the whole map
+// while the party is out of the dungeon or standing in a dark zone, rather than
+// hiding the squares it cannot show.
+bool is_map_visible(const std::optional<PartyPosition>& position)
+{
+	return position.has_value() && !IsDarkZone(position->level,
+	                                           position->quadrant,
+	                                           position->x,
+	                                           position->y);
+}
+
 bool resize_map_surface(const int width_px, const int height_px)
 {
 	if (map_surface && map_surface->w == width_px && map_surface->h == height_px) {
@@ -639,14 +662,16 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 {
 	const auto position = GetPartyPosition();
 
-	if (!position || !atlases[0][0]) {
+	if (!atlases[0][0] || !is_map_visible(position)) {
 		return nullptr;
 	}
 
-	// The original blanks the whole map while the party stands in a dark
-	// zone rather than just hiding those squares.
-	if (IsDarkZone(position->level, position->quadrant, position->x, position->y)) {
-		return nullptr;
+	// The original drops any pan the moment the party moves or turns
+	// (am_wiz6.cpp:1083). Without this the view would stay offset exactly
+	// while the party is walking, which is when it most needs to be centred.
+	if (position != last_drawn_position) {
+		last_drawn_position = position;
+		scroll_px           = {};
 	}
 
 	if (!resize_map_surface(width_px, height_px)) {
@@ -662,16 +687,18 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 		return nullptr;
 	}
 
-	// Centre the party's square in the window. The Y term counts down from
-	// the top of the level because the game's Y axis points north while the
-	// surface's points south.
+	// Centre the party's square in the window, then shift by however far
+	// the user has dragged. The Y term counts down from the top of the
+	// level because the game's Y axis points north while the surface's
+	// points south.
 	const auto party_abs_x = party_origin->x + position->x;
 	const auto party_abs_y = party_origin->y + position->y;
 
-	const auto view_x = -(party_abs_x * SquarePx - (width_px / 2 - SquarePx / 2));
-	const auto view_y = -((LevelRows - 1 + QuadrantSize) * SquarePx -
-	                      party_abs_y * SquarePx -
-	                      (height_px / 2 - SquarePx / 2));
+	const auto view_x = scroll_px.x - (party_abs_x * SquarePx -
+	                                   (width_px / 2 - SquarePx / 2));
+	const auto view_y = scroll_px.y - ((LevelRows - 1 + QuadrantSize) * SquarePx -
+	                                   party_abs_y * SquarePx -
+	                                   (height_px / 2 - SquarePx / 2));
 
 	// Four passes over all twelve quadrants, in this order, because later
 	// passes are meant to draw over earlier ones: floors, then the walls
@@ -724,6 +751,24 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 	}
 
 	return map_surface;
+}
+
+void ScrollMap(const int delta_x_px, const int delta_y_px)
+{
+	// The original refuses to pan a map it is not drawing
+	// (am_wiz6.cpp:1531), so a drag nobody can see cannot leave the view
+	// offset for whenever the party walks back into the light.
+	if (!is_map_visible(GetPartyPosition())) {
+		return;
+	}
+
+	scroll_px.x = std::clamp(scroll_px.x + delta_x_px, -MaxScrollPx, MaxScrollPx);
+	scroll_px.y = std::clamp(scroll_px.y + delta_y_px, -MaxScrollPx, MaxScrollPx);
+}
+
+void RecentreMap()
+{
+	scroll_px = {};
 }
 
 } // namespace wiz6
