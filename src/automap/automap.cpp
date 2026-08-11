@@ -14,6 +14,7 @@
 #include "config/setup.h"
 #include "dosbox.h"
 #include "dosbox_config.h"
+#include "gui/common.h"
 #include "utils/checks.h"
 #include "utils/math_utils.h"
 
@@ -152,6 +153,21 @@ void create_window()
 	if (!automap.window) {
 		LOG_WARNING("AUTOMAP: Failed to create window: %s", SDL_GetError());
 		return;
+	}
+
+	// Without this the automap opens *behind* the emulator window, which is
+	// worse than untidy: the pointer is then over the emulator, its motion
+	// events carry that window's ID, and the pan and recentre controls look
+	// broken until the user alt-tabs.
+	//
+	// Making it a child also minimises and restores it with the emulator. A
+	// window the user has closed stays closed, because SDL only restores
+	// children whose hidden status it set itself.
+	if (auto* main_window = GFX_GetWindow()) {
+		if (!SDL_SetWindowParent(automap.window, main_window)) {
+			LOG_WARNING("AUTOMAP: Could not keep the window above the emulator: %s",
+			            SDL_GetError());
+		}
 	}
 
 	automap.renderer = SDL_CreateRenderer(automap.window, RendererDriver);
