@@ -10,8 +10,11 @@
 #include <span>
 
 #include "cpu/paging.h"
+#include "dos/dos.h"
+#include "dos/dos_system.h"
 #include "dosbox.h"
 #include "hardware/memory.h"
+#include "misc/support.h"
 #include "utils/checks.h"
 #include "utils/string_utils.h"
 
@@ -350,6 +353,159 @@ std::string_view dos_basename(const std::string_view path)
 	             : path.substr(separator_pos + 1);
 }
 
+// The game's own files, watched for but never touched.
+constexpr std::string_view NewGameFileName  = "NEWGAME.DBS";
+constexpr std::string_view SaveGameFileName = "SAVEGAME.DBS";
+
+// The automap's files, and the one previous generation of each it keeps.
+// MAP.NTS (map notes) and MAP.PAL are the original's too, but this port has
+// neither notes nor a palette editor, so it must leave both strictly alone
+// rather than truncate a file it cannot fill in.
+//
+// These are plain pointers rather than string_views because every use is a DOS
+// call wanting a C string, and nothing here compares them.
+constexpr auto CacheFileName        = "MAP.CAC";
+constexpr auto CacheBackupFileName  = "MAPCAC.BAK";
+constexpr auto VisibilityFileName   = "MAP.VIS";
+constexpr auto VisibilityBackupName = "MAPVIS.BAK";
+
+// The two files are a plain image of the arrays below, so their sizes are the
+// arrays' sizes and both are fixed by the format the original wrote in 2014.
+// Every member is a byte array, so neither struct has any padding to make the
+// image differ from what is in memory.
+constexpr size_t CacheFileSize      = 18816;
+constexpr size_t VisibilityFileSize = 12288;
+
+static_assert(sizeof(level_cache) == CacheFileSize);
+static_assert(sizeof(visibility) == VisibilityFileSize);
+
+// MAP.CAC is array-major -- every level's quadrant_start_x, then every
+// level's quadrant_start_y, and so on -- while `level_cache` is an array of
+// per-level structs. This walks the cache in the file's order, so reading and
+// writing it are both a plain sequence of transfers.
+template <typename Callback>
+void for_each_cache_array(const Callback& callback)
+{
+	const auto every_level = [&callback](auto member) {
+		for (auto& cache : level_cache) {
+			callback(std::span<uint8_t>(cache.*member));
+		}
+	};
+
+	every_level(&LevelCache::quadrant_start_x);
+	every_level(&LevelCache::quadrant_start_y);
+	every_level(&LevelCache::horizontal_walls);
+	every_level(&LevelCache::vertical_walls);
+	every_level(&LevelCache::features);
+	every_level(&LevelCache::feature_directions);
+	every_level(&LevelCache::floor);
+	every_level(&LevelCache::roof);
+}
+
+// The visibility array is contiguous and already in the file's order, so it
+// moves in one transfer.
+std::span<uint8_t> visibility_bytes()
+{
+	return {reinterpret_cast<uint8_t*>(visibility.data()), sizeof(visibility)};
+}
+
+// DOS reports a short transfer by lowering the count rather than failing, so
+// anything less than the whole array means a truncated or corrupt file.
+bool read_exactly(const uint16_t handle, const std::span<uint8_t> destination)
+{
+	auto amount = check_cast<uint16_t>(destination.size());
+
+	return DOS_ReadFile(handle, destination.data(), &amount) &&
+	       amount == destination.size();
+}
+
+bool write_exactly(const uint16_t handle, const std::span<uint8_t> source)
+{
+	auto amount = check_cast<uint16_t>(source.size());
+
+	return DOS_WriteFile(handle, source.data(), &amount) &&
+	       amount == source.size();
+}
+
+void clear_cache()
+{
+	level_cache = {};
+	visibility  = {};
+}
+
+// Keeps one previous generation of a file, exactly as the original does: a
+// save that goes wrong halfway costs the player the session's exploring, not
+// the whole map.
+void rotate_backup(const char* const name, const char* const backup_name)
+{
+	if (!DOS_FileExists(name)) {
+		return;
+	}
+
+	if (DOS_FileExists(backup_name)) {
+		DOS_UnlinkFile(backup_name);
+	}
+
+	DOS_Rename(name, backup_name);
+}
+
+// `transfer` is handed the open file and returns whether every byte it wanted
+// arrived. A file that is not there yet is not an error: it is what the first
+// save on an existing game looks like.
+template <typename Transfer>
+bool load_file(const char* const name, const Transfer& transfer)
+{
+	uint16_t handle = 0;
+
+	if (!DOS_FileExists(name) || !DOS_OpenFile(name, OPEN_READ, &handle)) {
+		return true;
+	}
+
+	const auto complete = transfer(handle);
+
+	DOS_CloseFile(handle);
+
+	if (!complete) {
+		LOG_WARNING("AUTOMAP: %s is truncated or corrupt; ignoring it", name);
+	}
+
+	return complete;
+}
+
+template <typename Transfer>
+void save_file(const char* const name, const char* const backup_name,
+               const Transfer& transfer)
+{
+	rotate_backup(name, backup_name);
+
+	uint16_t handle = 0;
+
+	if (!DOS_CreateFile(name, FatAttributeFlags{}, &handle)) {
+		LOG_WARNING("AUTOMAP: Could not create %s", name);
+		return;
+	}
+
+	if (!transfer(handle)) {
+		LOG_WARNING("AUTOMAP: Could not write all of %s", name);
+	}
+
+	DOS_FlushFile(handle);
+	DOS_CloseFile(handle);
+}
+
+// Moves the whole level cache through one open file, in MAP.CAC's order.
+template <typename Element>
+bool transfer_cache(const uint16_t handle, const Element& element)
+{
+	auto complete = true;
+
+	for_each_cache_array([&](const std::span<uint8_t> array) {
+		complete = complete && element(handle, array);
+	});
+
+	return complete;
+}
+
 bool has_signature_at(const PhysPt addr)
 {
 	for (size_t i = 0; i < Signature.size(); ++i) {
@@ -552,6 +708,83 @@ std::string_view LevelName(const int level)
 	}
 
 	return LevelNames[static_cast<size_t>(level)];
+}
+
+PersistenceRequest RequestForOpenedFile(const std::string_view dos_path)
+{
+	if (!data_segment_addr) {
+		return PersistenceRequest::None;
+	}
+
+	const auto name = dos_basename(dos_path);
+
+	if (iequals(name, SaveGameFileName)) {
+		return PersistenceRequest::Load;
+	}
+
+	// The game opens NEWGAME.DBS to start a fresh party, which is the only
+	// notice the automap gets that the old map no longer applies.
+	if (iequals(name, NewGameFileName)) {
+		return PersistenceRequest::NewGame;
+	}
+
+	return PersistenceRequest::None;
+}
+
+PersistenceRequest RequestForCreatedFile(const std::string_view dos_path)
+{
+	if (!data_segment_addr) {
+		return PersistenceRequest::None;
+	}
+
+	// Creating the save is the game overwriting it, so the map is written
+	// alongside it. NEWGAME.DBS is not watched for here: the game only ever
+	// reads it.
+	return iequals(dos_basename(dos_path), SaveGameFileName)
+	             ? PersistenceRequest::Save
+	             : PersistenceRequest::None;
+}
+
+void ApplyPersistence(const PersistenceRequest request)
+{
+	switch (request) {
+	case PersistenceRequest::None: return;
+
+	case PersistenceRequest::NewGame: clear_cache(); return;
+
+	case PersistenceRequest::Load:
+		// Anything that cannot be read back is dropped rather than half
+		// applied, so a corrupt file costs the explored map and nothing
+		// worse.
+		clear_cache();
+
+		if (!load_file(CacheFileName, [](const uint16_t handle) {
+			    return transfer_cache(handle, read_exactly);
+		    })) {
+			level_cache = {};
+		}
+
+		if (!load_file(VisibilityFileName, [](const uint16_t handle) {
+			    return read_exactly(handle, visibility_bytes());
+		    })) {
+			visibility = {};
+		}
+
+		return;
+
+	case PersistenceRequest::Save:
+		save_file(CacheFileName, CacheBackupFileName, [](const uint16_t handle) {
+			return transfer_cache(handle, write_exactly);
+		});
+
+		save_file(VisibilityFileName,
+		          VisibilityBackupName,
+		          [](const uint16_t handle) {
+			          return write_exactly(handle, visibility_bytes());
+		          });
+
+		return;
+	}
 }
 
 } // namespace wiz6

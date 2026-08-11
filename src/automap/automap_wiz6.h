@@ -115,6 +115,27 @@ bool IsDarkZone(const int level, const int quadrant, const int x, const int y);
 // The game's own name for a dungeon level. Empty for an out-of-range index.
 std::string_view LevelName(const int level);
 
+// The automap keeps what it has explored in two files of its own, MAP.CAC and
+// MAP.VIS, alongside the game's save. The game knows nothing about them, so
+// they are kept in step by watching it open and create its own save file.
+enum class PersistenceRequest {
+	None,
+	NewGame, // starting over: forget everything
+	Load,
+	Save,
+};
+
+// What the automap should do with its files, given one the guest has just
+// opened or created. Both are called for every file the guest touches, so
+// they do as little as possible before ruling a name out.
+PersistenceRequest RequestForOpenedFile(const std::string_view dos_path);
+PersistenceRequest RequestForCreatedFile(const std::string_view dos_path);
+
+// Carries out a request. This does guest DOS file I/O, so it must not be
+// called from inside one of the hooks that produced the request -- see
+// PORTING.md section 7.5 and the deferral in automap.cpp.
+void ApplyPersistence(const PersistenceRequest request);
+
 } // namespace wiz6
 
 #endif // DOSBOX_AUTOMAP_WIZ6_H

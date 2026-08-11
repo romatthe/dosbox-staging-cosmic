@@ -57,6 +57,13 @@ struct AutomapState {
 	// The level the window title currently names, if any.
 	std::optional<int> titled_level = {};
 
+	// What the guest's last touch of its save file calls for, and whether
+	// one is being carried out. Both belong to the deferral described at
+	// AUTOMAP_NotifyFileOpened.
+	wiz6::PersistenceRequest pending_persistence = wiz6::PersistenceRequest::None;
+
+	bool applying_persistence = false;
+
 	uint64_t last_present_ms = 0;
 };
 
@@ -413,19 +420,73 @@ void AUTOMAP_NotifyProgramLoad(const std::string_view name,
 	}
 }
 
-void AUTOMAP_NotifyFileOpened([[maybe_unused]] const std::string_view dos_path)
+// Both file hooks run from inside DOS_OpenFile and DOS_CreateFile, just before
+// they return and while the guest's INT 21h call is still in flight. Doing the
+// automap's own file I/O there would allocate DOS handles out of the guest's
+// table at an arbitrary moment, and near the handle limit the map would fail to
+// save with nothing to show for it (PORTING.md 7.5). So the hooks only record
+// what is wanted, and the next frame does it.
+//
+// They also fire for every file the guest touches -- a bare boot to the DOS
+// prompt opens AUTOEXEC.BAT about a dozen times -- so the work here has to stay
+// down to a name comparison.
+static bool is_persistence_watched()
 {
-	// TODO Phase 4: load MAP.CAC / MAP.VIS on SAVEGAME.DBS, zero them on
-	// NEWGAME.DBS.
+	// While a request is being carried out the automap is creating MAP.CAC
+	// and MAP.VIS itself, and those come back through these same hooks.
+	// Neither name can match the game's save, so this is belt and braces --
+	// but it keeps the recursion impossible by construction rather than by
+	// the file names happening to differ.
+	return automap.settings.enabled && !automap.applying_persistence;
 }
 
-void AUTOMAP_NotifyFileCreated([[maybe_unused]] const std::string_view dos_path)
+void AUTOMAP_NotifyFileOpened(const std::string_view dos_path)
 {
-	// TODO Phase 4: write MAP.CAC / MAP.VIS on SAVEGAME.DBS.
+	if (!is_persistence_watched()) {
+		return;
+	}
+
+	const auto request = wiz6::RequestForOpenedFile(dos_path);
+
+	if (request != wiz6::PersistenceRequest::None) {
+		automap.pending_persistence = request;
+	}
+}
+
+void AUTOMAP_NotifyFileCreated(const std::string_view dos_path)
+{
+	if (!is_persistence_watched()) {
+		return;
+	}
+
+	const auto request = wiz6::RequestForCreatedFile(dos_path);
+
+	if (request != wiz6::PersistenceRequest::None) {
+		automap.pending_persistence = request;
+	}
+}
+
+// Runs whatever the file hooks asked for, now that no guest DOS call is in
+// progress. This is deliberately not tied to the window: the map has to be
+// loaded and saved whether or not the user has it open.
+static void apply_pending_persistence()
+{
+	if (automap.pending_persistence == wiz6::PersistenceRequest::None) {
+		return;
+	}
+
+	const auto request          = automap.pending_persistence;
+	automap.pending_persistence = wiz6::PersistenceRequest::None;
+
+	automap.applying_persistence = true;
+	wiz6::ApplyPersistence(request);
+	automap.applying_persistence = false;
 }
 
 void AUTOMAP_MaybeRender()
 {
+	apply_pending_persistence();
+
 	if (!automap.window) {
 		return;
 	}
