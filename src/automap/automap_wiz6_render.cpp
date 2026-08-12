@@ -527,6 +527,73 @@ void draw_features(const int level, const int quadrant, const int origin_x,
 
 // Pass 4: the party. The original's fourth pass also drew notes, which this
 // port does not implement.
+// A note's box is the one thing on the map that is not a blit from the tile
+// sheet. The original draws it as four GL lines (am_wiz6.cpp:986); this fills
+// four rectangles instead, which differs only in that a wide GL line straddles
+// its path by half its width while these are drawn inward. At three pixels on
+// a 22-pixel square that is a one-pixel difference on each edge, and there is
+// no reference to compare it against: the Linux reference build cannot create
+// notes at all, so Phase 3's pixel comparison has no equivalent here.
+void draw_box(const int x, const int y, const int w, const int h,
+              const int thickness, const uint32_t colour)
+{
+	if (!map_surface) {
+		return;
+	}
+
+	if (x + w <= 0 || y + h <= 0 || x >= map_surface->w || y >= map_surface->h) {
+		return;
+	}
+
+	// The original passes the colour to glColor3f, which ignores alpha, so
+	// whatever is stored in the note's top byte never reaches the screen.
+	constexpr uint32_t OpaqueAlpha = 0xff000000;
+
+	const std::array<SDL_Rect, 4> edges = {
+	        {
+                 {x, y, w, thickness},
+                 {x, y + h - thickness, w, thickness},
+                 {x, y, thickness, h},
+                 {x + w - thickness, y, thickness, h},
+	         }
+        };
+
+	for (const auto& edge : edges) {
+		SDL_FillSurfaceRect(map_surface, &edge, colour | OpaqueAlpha);
+	}
+}
+
+// The box is inset within its square, and a pixel shorter than it is wide.
+// Both come from the original, which has no stated reason for the asymmetry.
+constexpr int NoteBoxInsetPx     = 5;
+constexpr int NoteBoxThicknessPx = 3;
+constexpr int NoteBoxWidthPx     = SquarePx - 6;
+constexpr int NoteBoxHeightPx    = SquarePx - 7;
+
+// Notes are drawn wherever they are, without consulting visibility: a square
+// the party has never seen still shows its note. That is the original's
+// behaviour and it is the useful one, since a note is often put somewhere to
+// mark a place worth going back to.
+void draw_notes(const int level, const int quadrant, const int origin_x,
+                const int origin_y)
+{
+	for (const auto& note : NotesOnLevel(level)) {
+		if (note.quadrant != quadrant) {
+			continue;
+		}
+
+		const auto px = origin_x + SquarePx * note.x;
+		const auto py = origin_y + SquarePx * (QuadrantSize - 1 - note.y);
+
+		draw_box(px + NoteBoxInsetPx,
+		         py + NoteBoxInsetPx,
+		         NoteBoxWidthPx,
+		         NoteBoxHeightPx,
+		         NoteBoxThicknessPx,
+		         note.colour);
+	}
+}
+
 void draw_party(const PartyPosition& position, const int origin_x, const int origin_y)
 {
 	if (IsDarkZone(position.level, position.quadrant, position.x, position.y)) {
@@ -700,9 +767,10 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 	                                   party_abs_y * SquarePx -
 	                                   (height_px / 2 - SquarePx / 2));
 
-	// Four passes over all twelve quadrants, in this order, because later
+	// Five passes over all twelve quadrants, in this order, because later
 	// passes are meant to draw over earlier ones: floors, then the walls
-	// that bound them, then what stands on them, then the party.
+	// that bound them, then what stands on them, then the player's own
+	// notes, then the party.
 	const auto quadrant_origin_px = [&](const int quadrant, int& out_x, int& out_y) {
 		const auto origin = GetQuadrantOrigin(position->level, quadrant);
 
@@ -740,6 +808,15 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 
 		if (quadrant_origin_px(quadrant, x, y)) {
 			draw_features(position->level, quadrant, x, y);
+		}
+	}
+
+	for (auto quadrant = 0; quadrant < QuadrantCount; ++quadrant) {
+		int x = 0;
+		int y = 0;
+
+		if (quadrant_origin_px(quadrant, x, y)) {
+			draw_notes(position->level, quadrant, x, y);
 		}
 	}
 
