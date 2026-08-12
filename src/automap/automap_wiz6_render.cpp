@@ -11,6 +11,7 @@
 
 #include "automap_wiz6.h"
 #include "automap_wiz6_atlas.h"
+#include "automap_wiz6_coords.h"
 #include "dosbox.h"
 #include "dosbox_config.h"
 #include "utils/checks.h"
@@ -34,11 +35,6 @@ namespace {
 // give the author's intended colours -- which, going by the water tile being
 // authored red, were never what they were looking at either.
 constexpr auto AtlasPixelFormat = SDL_PIXELFORMAT_ABGR8888;
-
-// A square is this many pixels on the map, and a level is 256 squares tall.
-// Both are baked into the original's arithmetic and its file formats.
-constexpr int SquarePx  = 22;
-constexpr int LevelRows = 256;
 
 // Walls are thin bars along a square's edge, drawn two pixels longer than the
 // square so corners meet rather than leaving a notch.
@@ -111,6 +107,17 @@ constexpr Tile CursorLeft     = {157, 2, 14, 11, true, true};
 constexpr int MaxScrollPx = SquarePx * LevelRows;
 
 SDL_Point scroll_px = {};
+
+// Where the level's origin sat in the last frame, and which level that was.
+// Turning a mouse position back into a square means inverting the same
+// transform the frame was drawn with, so it has to be the frame the user is
+// actually looking at rather than one recomputed from the party's position.
+struct View {
+	SDL_Point origin = {};
+	int level        = 0;
+};
+
+std::optional<View> last_view = {};
 
 // The party's position as of the last frame drawn, so that a move can be
 // spotted and the pan dropped.
@@ -767,6 +774,11 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 	                                   party_abs_y * SquarePx -
 	                                   (height_px / 2 - SquarePx / 2));
 
+	last_view = View{
+	        {view_x, view_y},
+                position->level
+        };
+
 	// Five passes over all twelve quadrants, in this order, because later
 	// passes are meant to draw over earlier ones: floors, then the walls
 	// that bound them, then what stands on them, then the player's own
@@ -779,7 +791,9 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 		}
 
 		out_x = view_x + origin->x * SquarePx;
-		out_y = view_y + (LevelRows - 1) * SquarePx - origin->y * SquarePx;
+		// A quadrant's pixel origin is its top-left corner, so the row
+		// wanted here is its northernmost one.
+		out_y = view_y + SquarePx * RowOfAbsY(origin->y + QuadrantSize - 1);
 
 		return true;
 	};
@@ -828,6 +842,39 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 	}
 
 	return map_surface;
+}
+
+std::optional<MapSquare> SquareAtPixel(const int x_px, const int y_px)
+{
+	if (!last_view) {
+		return {};
+	}
+
+	const auto from_left = x_px - last_view->origin.x;
+	const auto from_top  = y_px - last_view->origin.y;
+
+	// Integer division truncates towards zero, so a negative offset would
+	// otherwise land on row or column zero rather than outside the level.
+	if (from_left < 0 || from_top < 0) {
+		return {};
+	}
+
+	// The inverse of the placement the frame was drawn with: X counts up
+	// from the level's western edge, Y counts down from its northern one.
+	const auto abs_x = from_left / SquarePx;
+	const auto abs_y = AbsYOfRow(from_top / SquarePx);
+
+	if (abs_y < 0) {
+		return {};
+	}
+
+	const auto found = find_quadrant(last_view->level, abs_x, abs_y);
+
+	if (!found) {
+		return {};
+	}
+
+	return MapSquare{last_view->level, found->quadrant, found->x, found->y};
 }
 
 void ScrollMap(const int delta_x_px, const int delta_y_px)

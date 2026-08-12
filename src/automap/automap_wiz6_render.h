@@ -5,6 +5,8 @@
 #ifndef DOSBOX_AUTOMAP_WIZ6_RENDER_H
 #define DOSBOX_AUTOMAP_WIZ6_RENDER_H
 
+#include <optional>
+
 struct SDL_Surface;
 
 // Draws the Wizardry VI map into surfaces the automap module owns. Nothing
@@ -35,6 +37,23 @@ void ScrollMap(const int delta_x_px, const int delta_y_px);
 
 // Drops any pan, putting the party back in the middle of the window.
 void RecentreMap();
+
+// A square of the level the map is currently showing.
+struct MapSquare {
+	int level    = 0;
+	int quadrant = 0;
+	int x        = 0;
+	int y        = 0;
+};
+
+// Which square a point in the map surface falls on, or nothing if it lands
+// outside every quadrant -- quadrants do not tile a level, so most of the
+// window usually does. Coordinates are map pixels, not window coordinates:
+// the two differ on a HiDPI display.
+//
+// Answers about the last frame drawn, so it returns nothing until there has
+// been one.
+std::optional<MapSquare> SquareAtPixel(const int x_px, const int y_px);
 
 } // namespace wiz6
 

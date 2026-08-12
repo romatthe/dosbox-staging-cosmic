@@ -17,6 +17,7 @@
 #include "gui/common.h"
 #include "utils/checks.h"
 #include "utils/math_utils.h"
+#include "utils/string_utils.h"
 
 // must be included after dosbox_config.h
 #include <SDL3/SDL.h>
@@ -399,6 +400,50 @@ void present()
 	automap.last_present_ms = SDL_GetTicks();
 }
 
+// The original reads the modifiers off the keyboard rather than out of the
+// event, so one held down before the automap took focus still counts.
+bool alt_is_held()
+{
+	return (SDL_GetModState() & SDL_KMOD_ALT) != 0;
+}
+
+bool ctrl_is_held()
+{
+	return (SDL_GetModState() & SDL_KMOD_CTRL) != 0;
+}
+
+// Window coordinates are not map pixels on a HiDPI display; this is the same
+// correction the pan applies to its deltas.
+SDL_Point window_to_map_px(const float x, const float y)
+{
+	const auto density = SDL_GetWindowPixelDensity(automap.window);
+
+	return {iroundf(x * density), iroundf(y * density)};
+}
+
+// Puts the clicked square on the clipboard in the form a note's hyperlink
+// uses, so it can be pasted straight into another note.
+void copy_square_reference(const float x, const float y)
+{
+	const auto point  = window_to_map_px(x, y);
+	const auto square = wiz6::SquareAtPixel(point.x, point.y);
+
+	if (!square) {
+		return;
+	}
+
+	const auto reference = format_str("{%d:%d:%d:%d}",
+	                                  square->level,
+	                                  square->quadrant,
+	                                  square->x,
+	                                  square->y);
+
+	if (!SDL_SetClipboardText(reference.c_str())) {
+		LOG_WARNING("AUTOMAP: Could not copy to the clipboard: %s",
+		            SDL_GetError());
+	}
+}
+
 } // namespace
 
 void AUTOMAP_AddConfigSection(const ConfigPtr& conf)
@@ -598,6 +643,17 @@ void AUTOMAP_HandleEvent(const SDL_Event& event)
 		if (event.button.button == SDL_BUTTON_MIDDLE) {
 			wiz6::RecentreMap();
 			present();
+			break;
+		}
+
+		// Alt and left copies the clicked square's coordinates in the
+		// form a note's hyperlink uses, so one can be pasted into
+		// another note. Phase 3 left the Alt and Ctrl guards out
+		// because nothing needed them; this is the first thing that
+		// does.
+		if (event.button.button == SDL_BUTTON_LEFT && alt_is_held() &&
+		    !ctrl_is_held()) {
+			copy_square_reference(event.button.x, event.button.y);
 		}
 		break;
 
