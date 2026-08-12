@@ -7,7 +7,10 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 // State model for Wizardry VI: Bane of the Cosmic Forge.
 //
@@ -115,9 +118,52 @@ bool IsDarkZone(const int level, const int quadrant, const int x, const int y);
 // The game's own name for a dungeon level. Empty for an out-of-range index.
 std::string_view LevelName(const int level);
 
-// The automap keeps what it has explored in two files of its own, MAP.CAC and
-// MAP.VIS, alongside the game's save. The game knows nothing about them, so
-// they are kept in step by watching it open and create its own save file.
+// A note the player has pinned to a square, drawn as a coloured box around it.
+struct Note {
+	int quadrant = 0;
+	int x        = 0;
+	int y        = 0;
+
+	// Packed 0xAABBGGRR, the same order the renderer and the atlas use.
+	uint32_t colour = 0;
+
+	// UTF-16, and deliberately not `std::wstring`. MAP.NTS stores a count
+	// of 16-bit code units followed by that many units; `wchar_t` is 2
+	// bytes on the Windows the original was built for and 4 here, so a
+	// `wstring` would silently read and write the wrong width.
+	std::u16string text;
+};
+
+// What a new note gets: opaque red, as the original does.
+constexpr uint32_t DefaultNoteColour = 0xff0000ff;
+
+// Every note on a level, in no particular order. Empty for an out-of-range
+// index.
+std::span<const Note> NotesOnLevel(const int level);
+
+// The note pinned to a square, or nothing if that square has none.
+const Note* FindNote(const int level, const int quadrant, const int x, const int y);
+
+// Creates the note on a square, replaces the text of the one already there,
+// or -- given empty text -- removes it. This is the whole of what the editor
+// needs; the original has no other way to delete one.
+void SetNoteText(const int level, const int quadrant, const int x, const int y,
+                 const std::u16string_view text);
+
+// Does nothing if the square has no note.
+void SetNoteColour(const int level, const int quadrant, const int x,
+                   const int y, const uint32_t colour);
+
+// The 16 user-defined colours the colour picker offers alongside its own.
+// Shared by every note and every level, and stored in MAP.PAL.
+constexpr int PaletteSize = 16;
+
+std::span<uint32_t> CustomPalette();
+
+// The automap keeps what it has explored in four files of its own -- MAP.CAC,
+// MAP.VIS, MAP.NTS and MAP.PAL -- alongside the game's save. The game knows
+// nothing about them, so they are kept in step by watching it open and create
+// its own save file.
 enum class PersistenceRequest {
 	None,
 	NewGame, // starting over: forget everything

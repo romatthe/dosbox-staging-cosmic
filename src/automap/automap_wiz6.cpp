@@ -4,10 +4,13 @@
 
 #include "automap_wiz6.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <optional>
 #include <span>
+#include <type_traits>
+#include <utility>
 
 #include "cpu/paging.h"
 #include "dos/dos.h"
@@ -358,9 +361,6 @@ constexpr std::string_view NewGameFileName  = "NEWGAME.DBS";
 constexpr std::string_view SaveGameFileName = "SAVEGAME.DBS";
 
 // The automap's files, and the one previous generation of each it keeps.
-// MAP.NTS (map notes) and MAP.PAL are the original's too, but this port has
-// neither notes nor a palette editor, so it must leave both strictly alone
-// rather than truncate a file it cannot fill in.
 //
 // These are plain pointers rather than string_views because every use is a DOS
 // call wanting a C string, and nothing here compares them.
@@ -368,6 +368,10 @@ constexpr auto CacheFileName        = "MAP.CAC";
 constexpr auto CacheBackupFileName  = "MAPCAC.BAK";
 constexpr auto VisibilityFileName   = "MAP.VIS";
 constexpr auto VisibilityBackupName = "MAPVIS.BAK";
+constexpr auto NotesFileName        = "MAP.NTS";
+constexpr auto NotesBackupName      = "MAPNTS.BAK";
+constexpr auto PaletteFileName      = "MAP.PAL";
+constexpr auto PaletteBackupName    = "MAPPAL.BAK";
 
 // The two files are a plain image of the arrays below, so their sizes are the
 // arrays' sizes and both are fixed by the format the original wrote in 2014.
@@ -427,10 +431,185 @@ bool write_exactly(const uint16_t handle, const std::span<uint8_t> source)
 	       amount == source.size();
 }
 
+// Notes and the palette live beside the explored map but are the player's
+// writing rather than anything read out of the game, so they are kept apart
+// from the caches the game's memory refills every frame.
+std::array<std::vector<Note>, LevelCount> notes = {};
+
+std::array<uint32_t, PaletteSize> palette = {};
+
 void clear_cache()
 {
 	level_cache = {};
 	visibility  = {};
+}
+
+void clear_notes()
+{
+	notes   = {};
+	palette = {};
+}
+
+// MAP.NTS is a stream of fixed-width little-endian scalars rather than an
+// image of an array, so each field states its own width. Little-endian is
+// what the original wrote and what every host this runs on uses.
+template <typename T>
+std::span<uint8_t> scalar_bytes(T& value)
+{
+	static_assert(std::is_trivially_copyable_v<T>);
+
+	return {reinterpret_cast<uint8_t*>(&value), sizeof(T)};
+}
+
+// The text is the one variable-width field: a count of 16-bit code units,
+// then that many units plus a terminator. Both are on disk, and the
+// terminator is read and written to keep the byte count the original's.
+bool read_note_text(const uint16_t handle, std::u16string& text)
+{
+	uint32_t length = 0;
+
+	if (!read_exactly(handle, scalar_bytes(length))) {
+		return false;
+	}
+
+	// A length that cannot fit in one DOS transfer is a corrupt file, not a
+	// note anybody typed; `read_exactly` would otherwise narrow it and read
+	// the wrong amount.
+	constexpr uint32_t MaxLength = UINT16_MAX / sizeof(char16_t) - 1;
+
+	if (length > MaxLength) {
+		return false;
+	}
+
+	text.assign(length + 1, u'\0');
+
+	if (!read_exactly(handle,
+	                  {reinterpret_cast<uint8_t*>(text.data()),
+	                   (length + 1) * sizeof(char16_t)})) {
+		return false;
+	}
+
+	text.resize(length);
+
+	return true;
+}
+
+bool write_note_text(const uint16_t handle, const std::u16string& text)
+{
+	auto length = check_cast<uint32_t>(text.size());
+
+	if (!write_exactly(handle, scalar_bytes(length))) {
+		return false;
+	}
+
+	// `std::u16string` keeps a terminator past `size()` that `c_str()`
+	// guarantees, which is exactly the extra unit the format wants.
+	return write_exactly(handle,
+	                     {reinterpret_cast<uint8_t*>(
+	                              const_cast<char16_t*>(text.c_str())),
+	                      (text.size() + 1) * sizeof(char16_t)});
+}
+
+// A note is pinned to a square and there is only ever one per square, so a
+// level cannot hold more notes than it has squares. Anything past that is a
+// corrupt count rather than a number to start allocating against.
+constexpr uint32_t MaxNotesPerLevel = QuadrantCount * QuadrantSize * QuadrantSize;
+
+bool read_notes(const uint16_t handle)
+{
+	for (auto& level_notes : notes) {
+		uint32_t count = 0;
+
+		if (!read_exactly(handle, scalar_bytes(count)) ||
+		    count > MaxNotesPerLevel) {
+			return false;
+		}
+
+		level_notes.clear();
+		level_notes.reserve(count);
+
+		for (uint32_t i = 0; i < count; ++i) {
+			uint16_t quadrant = 0;
+			uint16_t x        = 0;
+			uint16_t y        = 0;
+			uint32_t colour   = 0;
+
+			Note note = {};
+
+			if (!read_exactly(handle, scalar_bytes(quadrant)) ||
+			    !read_exactly(handle, scalar_bytes(x)) ||
+			    !read_exactly(handle, scalar_bytes(y)) ||
+			    !read_exactly(handle, scalar_bytes(colour)) ||
+			    !read_note_text(handle, note.text)) {
+				return false;
+			}
+
+			// A note outside the map would never draw and could
+			// not be reached to delete, so treat it as corruption
+			// rather than carry it around.
+			if (quadrant >= QuadrantCount || x >= QuadrantSize ||
+			    y >= QuadrantSize) {
+				return false;
+			}
+
+			note.quadrant = quadrant;
+			note.x        = x;
+			note.y        = y;
+			note.colour   = colour;
+
+			level_notes.push_back(std::move(note));
+		}
+	}
+
+	return true;
+}
+
+bool write_notes(const uint16_t handle)
+{
+	for (const auto& level_notes : notes) {
+		auto count = check_cast<uint32_t>(level_notes.size());
+
+		if (!write_exactly(handle, scalar_bytes(count))) {
+			return false;
+		}
+
+		for (const auto& note : level_notes) {
+			auto quadrant = check_cast<uint16_t>(note.quadrant);
+			auto x        = check_cast<uint16_t>(note.x);
+			auto y        = check_cast<uint16_t>(note.y);
+			auto colour   = note.colour;
+
+			if (!write_exactly(handle, scalar_bytes(quadrant)) ||
+			    !write_exactly(handle, scalar_bytes(x)) ||
+			    !write_exactly(handle, scalar_bytes(y)) ||
+			    !write_exactly(handle, scalar_bytes(colour)) ||
+			    !write_note_text(handle, note.text)) {
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+
+std::span<uint8_t> palette_bytes()
+{
+	return {reinterpret_cast<uint8_t*>(palette.data()), sizeof(palette)};
+}
+
+// Notes are keyed by square, so this is both the lookup and the uniqueness
+// rule the file format relies on.
+std::vector<Note>::iterator find_note(std::vector<Note>& level_notes,
+                                      const int quadrant, const int x, const int y)
+{
+	return std::ranges::find_if(level_notes, [&](const Note& note) {
+		return note.quadrant == quadrant && note.x == x && note.y == y;
+	});
+}
+
+bool level_is_valid(const int level)
+{
+	return level >= 0 && level < LevelCount;
 }
 
 // Keeps one previous generation of a file, exactly as the original does: a
@@ -745,12 +924,86 @@ PersistenceRequest RequestForCreatedFile(const std::string_view dos_path)
 	             : PersistenceRequest::None;
 }
 
+std::span<const Note> NotesOnLevel(const int level)
+{
+	if (!level_is_valid(level)) {
+		return {};
+	}
+
+	return notes[level];
+}
+
+const Note* FindNote(const int level, const int quadrant, const int x, const int y)
+{
+	if (!level_is_valid(level)) {
+		return nullptr;
+	}
+
+	auto& level_notes = notes[level];
+	const auto found  = find_note(level_notes, quadrant, x, y);
+
+	return (found == level_notes.end()) ? nullptr : &*found;
+}
+
+void SetNoteText(const int level, const int quadrant, const int x, const int y,
+                 const std::u16string_view text)
+{
+	if (!level_is_valid(level) || quadrant < 0 || quadrant >= QuadrantCount ||
+	    x < 0 || x >= QuadrantSize || y < 0 || y >= QuadrantSize) {
+		return;
+	}
+
+	auto& level_notes = notes[level];
+	const auto found  = find_note(level_notes, quadrant, x, y);
+
+	if (text.empty()) {
+		if (found != level_notes.end()) {
+			level_notes.erase(found);
+		}
+		return;
+	}
+
+	if (found != level_notes.end()) {
+		found->text = text;
+		return;
+	}
+
+	level_notes.push_back({.quadrant = quadrant,
+	                       .x        = x,
+	                       .y        = y,
+	                       .colour   = DefaultNoteColour,
+	                       .text     = std::u16string(text)});
+}
+
+void SetNoteColour(const int level, const int quadrant, const int x,
+                   const int y, const uint32_t colour)
+{
+	if (!level_is_valid(level)) {
+		return;
+	}
+
+	auto& level_notes = notes[level];
+	const auto found  = find_note(level_notes, quadrant, x, y);
+
+	if (found != level_notes.end()) {
+		found->colour = colour;
+	}
+}
+
+std::span<uint32_t> CustomPalette()
+{
+	return palette;
+}
+
 void ApplyPersistence(const PersistenceRequest request)
 {
 	switch (request) {
 	case PersistenceRequest::None: return;
 
-	case PersistenceRequest::NewGame: clear_cache(); return;
+	case PersistenceRequest::NewGame:
+		clear_cache();
+		clear_notes();
+		return;
 
 	case PersistenceRequest::Load:
 		// Anything that cannot be read back is dropped rather than half
@@ -770,6 +1023,18 @@ void ApplyPersistence(const PersistenceRequest request)
 			visibility = {};
 		}
 
+		clear_notes();
+
+		if (!load_file(NotesFileName, read_notes)) {
+			notes = {};
+		}
+
+		if (!load_file(PaletteFileName, [](const uint16_t handle) {
+			    return read_exactly(handle, palette_bytes());
+		    })) {
+			palette = {};
+		}
+
 		return;
 
 	case PersistenceRequest::Save:
@@ -782,6 +1047,12 @@ void ApplyPersistence(const PersistenceRequest request)
 		          [](const uint16_t handle) {
 			          return write_exactly(handle, visibility_bytes());
 		          });
+
+		save_file(NotesFileName, NotesBackupName, write_notes);
+
+		save_file(PaletteFileName, PaletteBackupName, [](const uint16_t handle) {
+			return write_exactly(handle, palette_bytes());
+		});
 
 		return;
 	}
