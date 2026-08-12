@@ -4,3 +4,5 @@ target_sources(dosboxcommon PRIVATE
   automap_wiz6_atlas.cpp
   automap_wiz6_render.cpp
 )
+
+target_link_libraries(dosboxcommon PRIVATE imgui)
