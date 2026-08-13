@@ -4,6 +4,7 @@
 #include "automap_overlay.h"
 
 #include <cassert>
+#include <cmath>
 #include <optional>
 #include <string>
 
@@ -11,6 +12,7 @@
 #include "automap_wiz6_render.h"
 #include "dosbox.h"
 #include "dosbox_config.h"
+#include "misc/support.h"
 #include "misc/unicode.h"
 #include "utils/checks.h"
 #include "utils/math_utils.h"
@@ -107,6 +109,53 @@ uint32_t from_imgui_colour(const ImVec4& colour)
 	// -- but storing it opaque keeps the files sensible to look at.
 	return 0xff000000 | (channel(colour.z) << 16) |
 	       (channel(colour.y) << 8) | channel(colour.x);
+}
+
+// Notes are UTF-16 and people write them in whatever script they think in, so
+// the overlay needs a font with more than ImGui's default ProggyClean, whose
+// glyphs stop at U+00FF. Cozette carries about 6,000 glyphs -- Latin including
+// the Extended-A that Latin-1 misses, Greek, Cyrillic and kana -- and is a
+// bitmap face, which sits better next to the map's pixel art than a smooth
+// outline font would, and matches the pixel font the debugger window uses.
+//
+// It does not cover everything: Hebrew, Arabic and the CJK ideographs are
+// absent, so text_is_drawable() below still has work to do. Fonts that do
+// cover those cost either a great deal more space (GNU Unifont, 5.3 MB) or a
+// subsetting step producing a file nobody can regenerate without the recipe.
+// PORTING.md section 8.1 records how that was measured and decided.
+constexpr auto FontDir  = "fonts";
+constexpr auto FontFile = "CozetteVector.otf";
+
+// Cozette is a 6x13 bitmap face and this is the size its pixel grid lands on.
+// Asking for anything else makes it blurry, which would give up the one thing
+// a bitmap font is for.
+constexpr auto FontSizePx = 13.0f;
+
+void load_font(const float density)
+{
+	const auto path = get_resource_path(FontDir, FontFile);
+
+	if (path.empty()) {
+		LOG_WARNING(
+		        "AUTOMAP: Could not find the overlay font '%s'; note text "
+		        "outside Latin-1 will not display",
+		        FontFile);
+		return;
+	}
+
+	auto& io = ImGui::GetIO();
+
+	// Rounded because a bitmap face wants whole pixels, and scaled here
+	// rather than through FontScaleDpi so that the rasterised size is the
+	// one asked for.
+	const auto size_px = std::round(FontSizePx * density);
+
+	if (!io.Fonts->AddFontFromFileTTF(path.string().c_str(), size_px)) {
+		LOG_WARNING(
+		        "AUTOMAP: Could not load the overlay font '%s'; note text "
+		        "outside Latin-1 will not display",
+		        path.string().c_str());
+	}
 }
 
 void close_dialog()
@@ -268,6 +317,41 @@ std::optional<wiz6::MapSquare> square_under_pointer()
 	                           iroundf(mouse.y * io.DisplayFramebufferScale.y));
 }
 
+// Whether every character of a note can actually be drawn. False for the
+// scripts the font does not carry -- Hebrew, Arabic, CJK -- for anything above
+// the Basic Multilingual Plane such as emoji, and for nearly everything if the
+// font resource is missing and ImGui has fallen back to its built-in one.
+//
+// Worth checking rather than assuming: a glyph the font does not have is drawn
+// as a small box or nothing at all, which looks exactly like the note having
+// been stored wrong. It has not been -- see the note on MAP.NTS in PORTING.md
+// section 6 -- so the tooltip says which of the two it is.
+bool text_is_drawable(const std::u16string_view text)
+{
+	auto* font = ImGui::GetFont();
+
+	if (!font) {
+		return true;
+	}
+
+	for (const auto unit : text) {
+		// Surrogates are halves of a character above the BMP, which
+		// no font the overlay is likely to carry will cover.
+		constexpr char16_t FirstSurrogate = 0xd800;
+		constexpr char16_t LastSurrogate  = 0xdfff;
+
+		if (unit >= FirstSurrogate && unit <= LastSurrogate) {
+			return false;
+		}
+
+		if (!font->IsGlyphInFont(unit)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 // The tooltip text for a square, or nothing when that square should have none.
 //
 // Transcribed from W6_OnMouseMotionInAutomapWindow (am_wiz6.cpp:1553). The
@@ -290,16 +374,14 @@ std::optional<std::string> tooltip_for(const wiz6::MapSquare& square,
 	            square.level, square.quadrant, square.x, square.y)) {
 		// A note wins over "Current Position" when the party is
 		// standing on one, as it does in the original.
-		//
-		// TODO Notes are UTF-16 but the overlay draws them in ImGui's
-		// default font, ProggyClean, whose glyphs stop at U+00FF. The
-		// conversion here is correct and complete; it is the drawing
-		// that is not. A German note survives, an em dash comes out as
-		// '?' and a Cyrillic or CJK note is lost altogether. Fixing it
-		// means giving the overlay a font with real coverage -- see
-		// PORTING.md section 8.1, which is where the decision to ship
-		// this limitation for now is written down.
-		return utf16_to_utf8(note->text);
+		auto text = utf16_to_utf8(note->text);
+
+		if (!text_is_drawable(note->text)) {
+			text += "\n(some characters cannot be shown, but they "
+			        "are stored correctly)";
+		}
+
+		return text;
 	}
 
 	const auto is_party_square = square.level == party.level &&
@@ -407,7 +489,11 @@ bool Init(SDL_Window* window, SDL_Renderer* renderer)
 	auto& style = ImGui::GetStyle();
 
 	style.ScaleAllSizes(density);
-	style.FontScaleDpi = density;
+
+	// FontScaleDpi is deliberately left alone: the font below is a bitmap
+	// face rasterised at a whole-pixel size, and scaling it afterwards is
+	// exactly what would blur it.
+	load_font(density);
 
 	if (!ImGui_ImplSDL3_InitForSDLRenderer(window, renderer)) {
 		LOG_WARNING("AUTOMAP: Could not set up the overlay's platform backend");
