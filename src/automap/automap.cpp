@@ -438,18 +438,25 @@ void present()
 	automap.last_present_ms = SDL_GetTicks();
 }
 
-// How long to wait between repaints, given what is on screen.
-uint64_t present_interval_ms()
-{
-	return overlay::IsShowingSomething() ? InteractivePresentIntervalMs
-	                                     : MinPresentIntervalMs;
-}
+// Whether a repaint is answering the pointer or just keeping the map current.
+enum class Pace { Idle, Interactive };
 
-// Repaints if enough time has passed. Used by everything that wants the window
-// to keep up with the pointer.
-void present_if_due()
+// Repaints if enough time has passed.
+//
+// Anything the pointer is moving -- a pan, a tooltip, a dialog being dragged --
+// is direct manipulation and has to keep up with the hand doing it, so every
+// repaint driven by an input event asks for the interactive pace. The idle
+// path still takes it whenever the overlay has something on screen, because a
+// dialog animates on its own.
+void present_if_due(const Pace pace = Pace::Idle)
 {
-	if (SDL_GetTicks() - automap.last_present_ms >= present_interval_ms()) {
+	const auto interactive = pace == Pace::Interactive ||
+	                         overlay::IsShowingSomething();
+
+	const auto interval_ms = interactive ? InteractivePresentIntervalMs
+	                                     : MinPresentIntervalMs;
+
+	if (SDL_GetTicks() - automap.last_present_ms >= interval_ms) {
 		present();
 	}
 }
@@ -686,7 +693,7 @@ void AUTOMAP_HandleEvent(const SDL_Event& event)
 	// repaint here the only redraws would be the emulator's frame tick, and
 	// the widget would trail the pointer at 24 Hz.
 	if (overlay::HandleEvent(event)) {
-		present_if_due();
+		present_if_due(Pace::Interactive);
 		return;
 	}
 
@@ -739,13 +746,13 @@ void AUTOMAP_HandleEvent(const SDL_Event& event)
 			// more often than the map needs redrawing. Dropping the
 			// last motion of a drag costs nothing, because the pan
 			// itself is kept and the next frame draws it.
-			present_if_due();
+			present_if_due(Pace::Interactive);
 
 		} else if (overlay::IsShowingSomething()) {
 			// Not dragging, but a tooltip is up and follows the
 			// pointer. Without this it would only move on the
 			// emulator's frame tick and lag noticeably behind.
-			present_if_due();
+			present_if_due(Pace::Interactive);
 		}
 		break;
 
