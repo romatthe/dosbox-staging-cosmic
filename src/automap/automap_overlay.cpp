@@ -158,6 +158,94 @@ void load_font(const float density)
 	}
 }
 
+// The overlay's colours, from the Nord palette (Arctic Ice Studio, MIT,
+// <https://www.nordtheme.com>). ImGui's stock dark theme is a fine developer
+// look and a slightly harsh one to read a note in; Nord's lower contrast is
+// easier on the eyes over a dark map.
+//
+// Written out from the published palette rather than lifted from one of the
+// theme snippets that circulate on imgui issue 707. Those are pleasant enough,
+// but they carry no licence, several are openly LLM-generated, and every one of
+// them sets colours for docking, tabs and plots that this overlay has no way of
+// showing. Only what the automap actually draws is set below.
+namespace nord {
+constexpr auto PolarNight0 = IM_COL32(0x2e, 0x34, 0x40, 0xff); // backgrounds
+constexpr auto PolarNight1 = IM_COL32(0x3b, 0x42, 0x52, 0xff);
+constexpr auto PolarNight2 = IM_COL32(0x43, 0x4c, 0x5e, 0xff);
+constexpr auto PolarNight3 = IM_COL32(0x4c, 0x56, 0x6a, 0xff); // borders
+constexpr auto SnowStorm0  = IM_COL32(0xd8, 0xde, 0xe9, 0xff); // text
+constexpr auto Frost1      = IM_COL32(0x88, 0xc0, 0xd0, 0xff); // active accents
+constexpr auto Frost2      = IM_COL32(0x81, 0xa1, 0xc1, 0xff);
+constexpr auto Frost3      = IM_COL32(0x5e, 0x81, 0xac, 0xff); // titles
+} // namespace nord
+
+void apply_theme()
+{
+	auto& style = ImGui::GetStyle();
+
+	const auto set = [&](const ImGuiCol_ index,
+	                     const ImU32 packed,
+	                     const float alpha = 1.0f) {
+		auto colour = ImGui::ColorConvertU32ToFloat4(packed);
+		colour.w    = alpha;
+
+		style.Colors[index] = colour;
+	};
+
+	set(ImGuiCol_Text, nord::SnowStorm0);
+	set(ImGuiCol_TextDisabled, nord::PolarNight3);
+	set(ImGuiCol_TextSelectedBg, nord::Frost3, 0.60f);
+
+	// Tooltips and both dialogs are popups. Kept fully opaque on purpose:
+	// the map behind them is high-contrast pixel art, and letting any of it
+	// through costs legibility for nothing.
+	set(ImGuiCol_WindowBg, nord::PolarNight0);
+	set(ImGuiCol_PopupBg, nord::PolarNight0);
+	set(ImGuiCol_ModalWindowDimBg, nord::PolarNight0, 0.60f);
+
+	set(ImGuiCol_Border, nord::PolarNight3);
+	set(ImGuiCol_BorderShadow, nord::PolarNight0, 0.0f);
+	set(ImGuiCol_Separator, nord::PolarNight3);
+
+	set(ImGuiCol_TitleBg, nord::PolarNight1);
+	set(ImGuiCol_TitleBgActive, nord::PolarNight3);
+	set(ImGuiCol_TitleBgCollapsed, nord::PolarNight1);
+
+	// The note field, and the colour picker's numeric boxes.
+	set(ImGuiCol_FrameBg, nord::PolarNight1);
+	set(ImGuiCol_FrameBgHovered, nord::PolarNight2);
+	set(ImGuiCol_FrameBgActive, nord::PolarNight2);
+
+	set(ImGuiCol_Button, nord::PolarNight2);
+	set(ImGuiCol_ButtonHovered, nord::PolarNight3);
+	set(ImGuiCol_ButtonActive, nord::Frost3);
+
+	set(ImGuiCol_SliderGrab, nord::Frost2);
+	set(ImGuiCol_SliderGrabActive, nord::Frost1);
+	set(ImGuiCol_CheckMark, nord::Frost1);
+	set(ImGuiCol_NavCursor, nord::Frost1);
+
+	// The map is 22-pixel tiles drawn in a bitmap font, so the chrome stays
+	// close to square. Rounded corners are antialiased curves, and next to
+	// pixel art a lot of them look like a different program's window.
+	constexpr auto Rounding = 2.0f;
+
+	style.WindowRounding = Rounding;
+	style.PopupRounding  = Rounding;
+	style.FrameRounding  = Rounding;
+	style.GrabRounding   = Rounding;
+
+	style.WindowBorderSize = 1.0f;
+	style.PopupBorderSize  = 1.0f;
+	style.FrameBorderSize  = 1.0f;
+
+	// Stock ImGui is tight enough to look cramped once the text is a note
+	// somebody wrote rather than a debug readout.
+	style.WindowPadding = {10.0f, 10.0f};
+	style.FramePadding  = {6.0f, 4.0f};
+	style.ItemSpacing   = {8.0f, 6.0f};
+}
+
 void close_dialog()
 {
 	dialog = Dialog::None;
@@ -477,6 +565,7 @@ bool Init(SDL_Window* window, SDL_Renderer* renderer)
 	io.IniFilename = nullptr;
 
 	ImGui::StyleColorsDark();
+	apply_theme();
 
 	// A window on a HiDPI display is handed more pixels than it asks for.
 	// The renderer backend scales the overlay's geometry for that on its
