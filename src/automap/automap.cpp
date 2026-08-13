@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 
+#include "automap_overlay.h"
 #include "automap_wiz6.h"
 #include "automap_wiz6_coords.h"
 #include "automap_wiz6_render.h"
@@ -188,6 +189,10 @@ void create_window()
 
 	// The emulator's main thread is waiting behind every present.
 	SDL_SetRenderVSync(automap.renderer, 0);
+
+	if (!overlay::Init(automap.window, automap.renderer)) {
+		LOG_WARNING("AUTOMAP: Continuing without the overlay");
+	}
 
 	if (!wiz6::InitTileAtlas()) {
 		LOG_WARNING("AUTOMAP: Continuing without tiles; the map will be blank");
@@ -395,6 +400,8 @@ void present()
 	if (const auto* map = wiz6::RenderMap(width, height); map && upload(*map)) {
 		SDL_RenderTexture(automap.renderer, automap.texture, nullptr, nullptr);
 	}
+
+	overlay::Draw(automap.renderer);
 
 	SDL_RenderPresent(automap.renderer);
 
@@ -620,6 +627,12 @@ bool AUTOMAP_IsOwnEvent(const SDL_Event& event)
 void AUTOMAP_HandleEvent(const SDL_Event& event)
 {
 	assert(automap.window);
+
+	// The overlay sees every event, and answers whether it has taken this
+	// one -- clicking a widget must not also drag the map behind it.
+	if (overlay::HandleEvent(event)) {
+		return;
+	}
 
 	switch (event.type) {
 	case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
