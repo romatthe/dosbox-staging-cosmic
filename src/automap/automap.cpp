@@ -10,6 +10,7 @@
 #include <string>
 
 #include "automap_wiz6.h"
+#include "automap_wiz6_coords.h"
 #include "automap_wiz6_render.h"
 #include "config/setup.h"
 #include "dosbox.h"
@@ -444,6 +445,35 @@ void copy_square_reference(const float x, const float y)
 	}
 }
 
+// Follows the hyperlink in the note on the clicked square, if it has one. A
+// note is free text, so most have none and clicking them does nothing.
+void follow_note_link(const float x, const float y)
+{
+	const auto point  = window_to_map_px(x, y);
+	const auto square = wiz6::SquareAtPixel(point.x, point.y);
+
+	if (!square) {
+		return;
+	}
+
+	const auto* note = wiz6::FindNote(square->level,
+	                                  square->quadrant,
+	                                  square->x,
+	                                  square->y);
+	if (!note) {
+		return;
+	}
+
+	const auto target = wiz6::ParseSquareReference(note->text);
+
+	if (!target) {
+		return;
+	}
+
+	wiz6::JumpToSquare(*target);
+	present();
+}
+
 } // namespace
 
 void AUTOMAP_AddConfigSection(const ConfigPtr& conf)
@@ -654,6 +684,14 @@ void AUTOMAP_HandleEvent(const SDL_Event& event)
 		if (event.button.button == SDL_BUTTON_LEFT && alt_is_held() &&
 		    !ctrl_is_held()) {
 			copy_square_reference(event.button.x, event.button.y);
+		}
+
+		// Ctrl and left goes the other way: it follows a link a note
+		// carries, showing the square it names and, if that is on
+		// another level, that level.
+		if (event.button.button == SDL_BUTTON_LEFT && ctrl_is_held() &&
+		    !alt_is_held()) {
+			follow_note_link(event.button.x, event.button.y);
 		}
 		break;
 

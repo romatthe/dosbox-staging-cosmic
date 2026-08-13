@@ -108,6 +108,17 @@ constexpr int MaxScrollPx = SquarePx * LevelRows;
 
 SDL_Point scroll_px = {};
 
+// The level being drawn, which is not always the one the party is standing on:
+// following a note's hyperlink to another level shows that one instead, until
+// the party next moves. The original keeps the same distinction, between
+// `amw6_level` and the live level it reads at 0x363C.
+int displayed_level = 0;
+
+// The square a hyperlink last led to, boxed in amber whenever its level is on
+// screen. The original never clears this either (`amw6_jLevel`), so the box
+// survives the jump that made it.
+std::optional<MapSquare> jump_marker = {};
+
 // Where the level's origin sat in the last frame, and which level that was.
 // Turning a mouse position back into a square means inverting the same
 // transform the frame was drawn with, so it has to be the frame the user is
@@ -601,6 +612,37 @@ void draw_notes(const int level, const int quadrant, const int origin_x,
 	}
 }
 
+// Amber, from the original's glColor3f(0.98, 0.625, 0.12) at am_wiz6.cpp:1226
+// rounded to bytes and packed the way every other colour here is.
+constexpr uint32_t JumpMarkerColour = 0xff1f9ffa;
+
+constexpr int JumpMarkerInsetPx     = 3;
+constexpr int JumpMarkerThicknessPx = 2;
+constexpr int JumpMarkerSizePx      = SquarePx - 3;
+
+// Drawn last of all, over the party cursor, and placed from the view rather
+// than from a quadrant's origin because the square it marks need not be in a
+// quadrant that has one -- a level reached by a hyperlink but never visited has
+// no cached origins at all, and stacks every quadrant at (0, 0).
+void draw_jump_marker(const MapSquare& square, const int view_x, const int view_y)
+{
+	const auto origin = GetQuadrantOrigin(square.level, square.quadrant);
+
+	if (!origin) {
+		return;
+	}
+
+	const auto px = view_x + SquarePx * (origin->x + square.x);
+	const auto py = view_y + SquarePx * RowOfAbsY(origin->y + square.y);
+
+	draw_box(px + JumpMarkerInsetPx,
+	         py + JumpMarkerInsetPx,
+	         JumpMarkerSizePx,
+	         JumpMarkerSizePx,
+	         JumpMarkerThicknessPx,
+	         JumpMarkerColour);
+}
+
 void draw_party(const PartyPosition& position, const int origin_x, const int origin_y)
 {
 	if (IsDarkZone(position.level, position.quadrant, position.x, position.y)) {
@@ -742,10 +784,13 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 
 	// The original drops any pan the moment the party moves or turns
 	// (am_wiz6.cpp:1083). Without this the view would stay offset exactly
-	// while the party is walking, which is when it most needs to be centred.
+	// while the party is walking, which is when it most needs to be
+	// centred. Looking at another level is undone by the same move, and in
+	// the same place, because it is the same kind of temporary departure.
 	if (position != last_drawn_position) {
 		last_drawn_position = position;
 		scroll_px           = {};
+		displayed_level     = position->level;
 	}
 
 	if (!resize_map_surface(width_px, height_px)) {
@@ -776,7 +821,7 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 
 	last_view = View{
 	        {view_x, view_y},
-                position->level
+                displayed_level
         };
 
 	// Five passes over all twelve quadrants, in this order, because later
@@ -784,7 +829,7 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 	// that bound them, then what stands on them, then the player's own
 	// notes, then the party.
 	const auto quadrant_origin_px = [&](const int quadrant, int& out_x, int& out_y) {
-		const auto origin = GetQuadrantOrigin(position->level, quadrant);
+		const auto origin = GetQuadrantOrigin(displayed_level, quadrant);
 
 		if (!origin) {
 			return false;
@@ -803,7 +848,7 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 		int y = 0;
 
 		if (quadrant_origin_px(quadrant, x, y)) {
-			draw_floors(position->level, quadrant, x, y);
+			draw_floors(displayed_level, quadrant, x, y);
 		}
 	}
 
@@ -812,7 +857,7 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 		int y = 0;
 
 		if (quadrant_origin_px(quadrant, x, y)) {
-			draw_walls(position->level, quadrant, x, y);
+			draw_walls(displayed_level, quadrant, x, y);
 		}
 	}
 
@@ -821,7 +866,7 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 		int y = 0;
 
 		if (quadrant_origin_px(quadrant, x, y)) {
-			draw_features(position->level, quadrant, x, y);
+			draw_features(displayed_level, quadrant, x, y);
 		}
 	}
 
@@ -830,15 +875,25 @@ SDL_Surface* RenderMap(const int width_px, const int height_px)
 		int y = 0;
 
 		if (quadrant_origin_px(quadrant, x, y)) {
-			draw_notes(position->level, quadrant, x, y);
+			draw_notes(displayed_level, quadrant, x, y);
 		}
 	}
 
+	// The cursor says where the party is, so it is drawn only while the map
+	// is showing the level the party is on (am_wiz6.cpp:1021). Nothing else
+	// needs that guard: a level the party has never entered has no
+	// visibility, and visibility gates every pass above -- except the
+	// notes, which are meant to show regardless.
 	int party_x = 0;
 	int party_y = 0;
 
-	if (quadrant_origin_px(position->quadrant, party_x, party_y)) {
+	if (displayed_level == position->level &&
+	    quadrant_origin_px(position->quadrant, party_x, party_y)) {
 		draw_party(*position, party_x, party_y);
+	}
+
+	if (jump_marker && jump_marker->level == displayed_level) {
+		draw_jump_marker(*jump_marker, view_x, view_y);
 	}
 
 	return map_surface;
@@ -890,9 +945,55 @@ void ScrollMap(const int delta_x_px, const int delta_y_px)
 	scroll_px.y = std::clamp(scroll_px.y + delta_y_px, -MaxScrollPx, MaxScrollPx);
 }
 
+void JumpToSquare(const MapSquare& square)
+{
+	const auto position = GetPartyPosition();
+
+	if (!is_map_visible(position)) {
+		return;
+	}
+
+	const auto party_origin = GetQuadrantOrigin(position->level,
+	                                            position->quadrant);
+
+	const auto target_origin = GetQuadrantOrigin(square.level, square.quadrant);
+
+	if (!party_origin || !target_origin) {
+		return;
+	}
+
+	displayed_level = square.level;
+	jump_marker     = square;
+
+	// The view is always placed from the party's own square, so the pan
+	// that brings another square to the middle of the window is just the
+	// difference between where the two are drawn. The original computes the
+	// whole placement for the target and subtracts the party's
+	// (am_wiz6.cpp:1678-1681), which comes to the same thing -- the
+	// window's size cancels out of it.
+	//
+	// A level is 256 squares across, so this can never reach the clamp
+	// ScrollMap applies.
+	const auto party_abs_x  = party_origin->x + position->x;
+	const auto party_abs_y  = party_origin->y + position->y;
+	const auto target_abs_x = target_origin->x + square.x;
+	const auto target_abs_y = target_origin->y + square.y;
+
+	scroll_px = {SquarePx * (party_abs_x - target_abs_x),
+	             SquarePx * (RowOfAbsY(party_abs_y) - RowOfAbsY(target_abs_y))};
+}
+
 void RecentreMap()
 {
 	scroll_px = {};
+
+	// Middle-click puts the map back on the party in both senses: the
+	// original reassigns the displayed level from the live one here too
+	// (am_wiz6.cpp:1621), which is the only way back from a jump that does
+	// not involve walking.
+	if (const auto position = GetPartyPosition()) {
+		displayed_level = position->level;
+	}
 }
 
 } // namespace wiz6

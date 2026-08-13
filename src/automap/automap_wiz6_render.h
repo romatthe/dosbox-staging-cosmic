@@ -7,6 +7,8 @@
 
 #include <optional>
 
+#include "automap_wiz6_coords.h"
+
 struct SDL_Surface;
 
 // Draws the Wizardry VI map into surfaces the automap module owns. Nothing
@@ -35,16 +37,18 @@ SDL_Surface* RenderMap(const int width_px, const int height_px);
 // RecentreMap(); it is a look around rather than a mode the map stays in.
 void ScrollMap(const int delta_x_px, const int delta_y_px);
 
-// Drops any pan, putting the party back in the middle of the window.
+// Drops any pan, putting the party back in the middle of the window, and shows
+// the level the party is actually on.
 void RecentreMap();
 
-// A square of the level the map is currently showing.
-struct MapSquare {
-	int level    = 0;
-	int quadrant = 0;
-	int x        = 0;
-	int y        = 0;
-};
+// Shows the square's own level, panned so that the square sits in the middle of
+// the window, and boxes it in amber. This is where a note's hyperlink leads.
+//
+// Looking at another level is exactly as temporary as a pan and ends the same
+// way, when the party next moves or turns. The box outlives it, as the
+// original's does, so the level keeps showing where the link led until another
+// one is followed.
+void JumpToSquare(const MapSquare& square);
 
 // Which square a point in the map surface falls on, or nothing if it lands
 // outside every quadrant -- quadrants do not tile a level, so most of the

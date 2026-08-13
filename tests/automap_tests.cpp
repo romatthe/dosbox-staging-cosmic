@@ -58,4 +58,40 @@ TEST(automap_wiz6_coords, NorthIsUp)
 	EXPECT_LT(RowOfAbsY(200), RowOfAbsY(100));
 }
 
+TEST(automap_wiz6_coords, ParsesASquareReference)
+{
+	EXPECT_EQ(ParseSquareReference(u"{3:11:7:0}"), (MapSquare{3, 11, 7, 0}));
+
+	// Notes are free text, and the link is normally somewhere inside a
+	// sentence rather than the whole of it.
+	EXPECT_EQ(ParseSquareReference(u"back door {0:1:2:3} -- locked"),
+	          (MapSquare{0, 1, 2, 3}));
+}
+
+TEST(automap_wiz6_coords, RejectsWhatIsNotASquareReference)
+{
+	// Notes without a link at all, which is most of them.
+	EXPECT_FALSE(ParseSquareReference(u""));
+	EXPECT_FALSE(ParseSquareReference(u"trapped chest"));
+
+	// Malformed.
+	EXPECT_FALSE(ParseSquareReference(u"{3:11:7}"));
+	EXPECT_FALSE(ParseSquareReference(u"{3:11:7:0"));
+	EXPECT_FALSE(ParseSquareReference(u"{3::7:0}"));
+	EXPECT_FALSE(ParseSquareReference(u"{3:11:7:x}"));
+	EXPECT_FALSE(ParseSquareReference(u"{-3:11:7:0}"));
+
+	// Well formed but naming a square that cannot exist. Each field is one
+	// past its limit; a note carrying one of these would otherwise index
+	// out of every array the map is kept in.
+	EXPECT_FALSE(ParseSquareReference(u"{16:0:0:0}"));
+	EXPECT_FALSE(ParseSquareReference(u"{0:12:0:0}"));
+	EXPECT_FALSE(ParseSquareReference(u"{0:0:8:0}"));
+	EXPECT_FALSE(ParseSquareReference(u"{0:0:0:8}"));
+
+	// A count long enough to overflow, rather than being truncated to
+	// something in range.
+	EXPECT_FALSE(ParseSquareReference(u"{99999999999:0:0:0}"));
+}
+
 } // namespace
