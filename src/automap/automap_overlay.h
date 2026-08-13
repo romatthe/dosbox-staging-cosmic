@@ -35,6 +35,12 @@ bool HandleEvent(const SDL_Event& event);
 // after the map and before presenting.
 void Draw(SDL_Renderer* renderer);
 
+// Whether the last frame put anything on screen -- a tooltip, or either
+// dialog. The map only needs redrawing when the party moves, but a tooltip
+// follows the pointer and a dialog is dragged about, so both want repainting
+// far more often than the map does.
+bool IsShowingSomething();
+
 // Opens the note editor on a square, with whatever note is already there in
 // the field. Confirming it empty removes the note, which is the only way to
 // delete one -- in this port as in the original.

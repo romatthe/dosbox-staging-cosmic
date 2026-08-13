@@ -33,6 +33,10 @@ namespace {
 
 ImGuiContext* context = nullptr;
 
+// Whether the last frame drew anything at all. Read by the automap to decide
+// how often the window needs repainting.
+bool showing_something = false;
+
 // ImGui addresses whichever context is current through a global, and the
 // debugger drives a context of its own without ever setting one
 // (debugger_gui.cpp:407, which calls a bare ImGui::CreateContext). So the
@@ -600,6 +604,11 @@ bool Init(SDL_Window* window, SDL_Renderer* renderer)
 	return true;
 }
 
+bool IsShowingSomething()
+{
+	return showing_something;
+}
+
 bool HandleEvent(const SDL_Event& event)
 {
 	if (!context) {
@@ -695,7 +704,12 @@ void Draw(SDL_Renderer* renderer)
 	draw_widgets();
 
 	ImGui::Render();
-	ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
+
+	auto* draw_data = ImGui::GetDrawData();
+
+	showing_something = draw_data->TotalVtxCount > 0;
+
+	ImGui_ImplSDLRenderer3_RenderDrawData(draw_data, renderer);
 }
 
 } // namespace overlay

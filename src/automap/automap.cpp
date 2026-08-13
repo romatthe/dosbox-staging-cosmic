@@ -97,9 +97,27 @@ AutomapState automap = {};
 // debugger window uses it too -- see `src/debugger/debugger_gui.cpp`.
 constexpr auto RendererDriver = "gpu";
 
-// GFX_EndUpdate can run at the emulated refresh rate. A map redraw does not
-// need to be faster than this.
+// GFX_EndUpdate can run at the emulated refresh rate. The map itself only
+// changes when the party moves, so it does not need redrawing faster than
+// this.
+//
+// Note what this interval really buys, because it is not 30 frames a second:
+// AUTOMAP_MaybeRender only runs on an emulated frame, so the wait rounds up to
+// a whole number of them. At Wizardry VI's 70 Hz that is every third frame,
+// 42.9 ms, a measured 24 redraws a second.
 constexpr uint64_t MinPresentIntervalMs = 33;
+
+// That is far too slow for anything the pointer is moving. A tooltip follows
+// the cursor and a dialog gets dragged around, and at 24 Hz both visibly lag
+// behind the mouse. While the overlay has something on screen the window is
+// repainted at up to this instead -- and from the mouse events themselves,
+// which arrive much more often than emulated frames do, rather than only from
+// the frame tick.
+//
+// It is a deliberate trade rather than a free win: a redraw rasterises the
+// whole map and uploads it, which measures 0.7 ms of processor time here, and
+// it is the emulator's main thread that spends it.
+constexpr uint64_t InteractivePresentIntervalMs = 16;
 
 constexpr auto WindowTitle = "DOSBox Staging Automap";
 
@@ -420,6 +438,22 @@ void present()
 	automap.last_present_ms = SDL_GetTicks();
 }
 
+// How long to wait between repaints, given what is on screen.
+uint64_t present_interval_ms()
+{
+	return overlay::IsShowingSomething() ? InteractivePresentIntervalMs
+	                                     : MinPresentIntervalMs;
+}
+
+// Repaints if enough time has passed. Used by everything that wants the window
+// to keep up with the pointer.
+void present_if_due()
+{
+	if (SDL_GetTicks() - automap.last_present_ms >= present_interval_ms()) {
+		present();
+	}
+}
+
 // The original reads the modifiers off the keyboard rather than out of the
 // event, so one held down before the automap took focus still counts.
 bool alt_is_held()
@@ -624,11 +658,7 @@ void AUTOMAP_MaybeRender()
 		return;
 	}
 
-	if (SDL_GetTicks() - automap.last_present_ms < MinPresentIntervalMs) {
-		return;
-	}
-
-	present();
+	present_if_due();
 }
 
 bool AUTOMAP_IsOwnEvent(const SDL_Event& event)
@@ -650,7 +680,13 @@ void AUTOMAP_HandleEvent(const SDL_Event& event)
 
 	// The overlay sees every event, and answers whether it has taken this
 	// one -- clicking a widget must not also drag the map behind it.
+	//
+	// An event it has taken still needs painting, though, and this is the
+	// path that dragging a dialog or a colour picker goes down. Without the
+	// repaint here the only redraws would be the emulator's frame tick, and
+	// the widget would trail the pointer at 24 Hz.
 	if (overlay::HandleEvent(event)) {
+		present_if_due();
 		return;
 	}
 
@@ -703,10 +739,13 @@ void AUTOMAP_HandleEvent(const SDL_Event& event)
 			// more often than the map needs redrawing. Dropping the
 			// last motion of a drag costs nothing, because the pan
 			// itself is kept and the next frame draws it.
-			if (SDL_GetTicks() - automap.last_present_ms >=
-			    MinPresentIntervalMs) {
-				present();
-			}
+			present_if_due();
+
+		} else if (overlay::IsShowingSomething()) {
+			// Not dragging, but a tooltip is up and follows the
+			// pointer. Without this it would only move on the
+			// emulator's frame tick and lag noticeably behind.
+			present_if_due();
 		}
 		break;
 
