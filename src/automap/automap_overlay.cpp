@@ -60,6 +60,195 @@ private:
 	ImGuiContext* previous = nullptr;
 };
 
+// The two dialogs. Only one can be open at a time, which is what the original
+// got for free from its modal Win32 dialogs.
+enum class Dialog { None, NoteText, NoteColour };
+
+Dialog dialog              = Dialog::None;
+wiz6::MapSquare dialog_for = {};
+
+// ImGui wants OpenPopup called exactly once, on the frame the popup opens,
+// rather than every frame the popup is up.
+bool dialog_opening = false;
+
+// The note being edited, in UTF-8 because that is what ImGui edits. The
+// original's buffer is 1023 wide characters; this holds more text than that in
+// any script, and a note is capped at 32,766 code units on load anyway.
+std::array<char, 4096> note_buffer = {};
+
+uint32_t chosen_colour = 0;
+
+// Where the next "Add to palette" goes. Win32's colour dialog lets the user
+// pick which of the 16 custom slots to fill; this fills them left to right and
+// wraps, which is the one part of the picker that is not a transcription.
+int next_palette_slot = 0;
+
+// Note colours are stored the way the map surface wants them, 0xAABBGGRR, so
+// the channels come out in the opposite order from ImGui's float RGBA.
+ImVec4 to_imgui_colour(const uint32_t packed)
+{
+	constexpr auto Max = 255.0f;
+
+	return {static_cast<float>(packed & 0xff) / Max,
+	        static_cast<float>((packed >> 8) & 0xff) / Max,
+	        static_cast<float>((packed >> 16) & 0xff) / Max,
+	        1.0f};
+}
+
+uint32_t from_imgui_colour(const ImVec4& colour)
+{
+	const auto channel = [](const float value) {
+		return static_cast<uint32_t>(
+		        std::clamp(iroundf(value * 255.0f), 0, 255));
+	};
+
+	// The stored alpha never reaches the screen -- the original passes the
+	// colour to glColor3f, which ignores it, and draw_box forces it opaque
+	// -- but storing it opaque keeps the files sensible to look at.
+	return 0xff000000 | (channel(colour.z) << 16) |
+	       (channel(colour.y) << 8) | channel(colour.x);
+}
+
+void close_dialog()
+{
+	dialog = Dialog::None;
+	ImGui::CloseCurrentPopup();
+}
+
+// Both dialogs share this: centred, auto-sized, and dismissed by Escape as
+// well as by its own button.
+bool begin_dialog(const char* title)
+{
+	if (dialog_opening) {
+		ImGui::OpenPopup(title);
+		dialog_opening = false;
+	}
+
+	const auto centre = ImGui::GetMainViewport()->GetCenter();
+
+	ImGui::SetNextWindowPos(centre, ImGuiCond_Appearing, {0.5f, 0.5f});
+
+	return ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+}
+
+void draw_note_editor()
+{
+	if (!begin_dialog("Enter comment")) {
+		return;
+	}
+
+	ImGui::TextUnformatted(
+	        "If you leave it blank, the marker is removed from the map.");
+
+	// So that the note can be typed straight away, without clicking the
+	// field first.
+	//
+	// Asking on IsWindowAppearing() alone is not enough and looks like it
+	// should be: a popup that auto-resizes spends its first frame being
+	// measured rather than drawn, and the focus request made on that frame
+	// does not survive it. Asking until something is actually active is the
+	// form that works, and it stops the moment the field takes focus -- or
+	// the user puts it somewhere else themselves.
+	if (!ImGui::IsAnyItemActive()) {
+		ImGui::SetKeyboardFocusHere();
+	}
+
+	const auto entered = ImGui::InputText("##note",
+	                                      note_buffer.data(),
+	                                      note_buffer.size(),
+	                                      ImGuiInputTextFlags_EnterReturnsTrue);
+
+	const auto accepted = ImGui::Button("OK") || entered;
+
+	ImGui::SameLine();
+
+	const auto cancelled = ImGui::Button("Cancel") ||
+	                       ImGui::IsKeyPressed(ImGuiKey_Escape);
+
+	if (accepted) {
+		// SetNoteText does the whole of the original's branch here:
+		// replaces the text, creates the note, or -- given empty text
+		// -- removes it.
+		wiz6::SetNoteText(dialog_for.level,
+		                  dialog_for.quadrant,
+		                  dialog_for.x,
+		                  dialog_for.y,
+		                  utf8_to_utf16(std::string(note_buffer.data())));
+		close_dialog();
+
+	} else if (cancelled) {
+		close_dialog();
+	}
+
+	ImGui::EndPopup();
+}
+
+void draw_colour_picker()
+{
+	if (!begin_dialog("Note colour")) {
+		return;
+	}
+
+	auto colour = to_imgui_colour(chosen_colour);
+
+	if (ImGui::ColorPicker4("##colour", &colour.x, ImGuiColorEditFlags_NoAlpha)) {
+		chosen_colour = from_imgui_colour(colour);
+	}
+
+	// The 16 shared custom colours, which are what MAP.PAL stores.
+	ImGui::TextUnformatted("Palette");
+
+	const auto palette = wiz6::CustomPalette();
+
+	for (auto i = 0; i < wiz6::PaletteSize; ++i) {
+		constexpr ImVec2 SwatchSize = {20.0f, 20.0f};
+
+		ImGui::PushID(i);
+
+		if (ImGui::ColorButton("##swatch",
+		                       to_imgui_colour(palette[static_cast<size_t>(i)]),
+		                       ImGuiColorEditFlags_NoAlpha,
+		                       SwatchSize)) {
+			chosen_colour = palette[static_cast<size_t>(i)];
+		}
+
+		ImGui::PopID();
+
+		if (i % 8 != 7) {
+			ImGui::SameLine();
+		}
+	}
+
+	if (ImGui::Button("Add to palette")) {
+		palette[static_cast<size_t>(next_palette_slot)] = chosen_colour;
+
+		next_palette_slot = (next_palette_slot + 1) % wiz6::PaletteSize;
+	}
+
+	ImGui::Separator();
+
+	const auto accepted = ImGui::Button("OK");
+
+	ImGui::SameLine();
+
+	const auto cancelled = ImGui::Button("Cancel") ||
+	                       ImGui::IsKeyPressed(ImGuiKey_Escape);
+
+	if (accepted) {
+		wiz6::SetNoteColour(dialog_for.level,
+		                    dialog_for.quadrant,
+		                    dialog_for.x,
+		                    dialog_for.y,
+		                    chosen_colour);
+		close_dialog();
+
+	} else if (cancelled) {
+		close_dialog();
+	}
+
+	ImGui::EndPopup();
+}
+
 // Which square the pointer is over, or nothing when it is outside the window
 // or off every quadrant -- which most of the window usually is, since quadrants
 // do not tile a level.
@@ -127,6 +316,15 @@ std::optional<std::string> tooltip_for(const wiz6::MapSquare& square,
 // Builds the frame's widgets.
 void draw_widgets()
 {
+	// A dialog is modal, so it is the whole of the overlay while it is up
+	// -- including instead of the tooltip, which the original also hides
+	// before opening either of these.
+	switch (dialog) {
+	case Dialog::NoteText: draw_note_editor(); return;
+	case Dialog::NoteColour: draw_colour_picker(); return;
+	case Dialog::None: break;
+	}
+
 	const auto party = wiz6::GetPartyPosition();
 
 	// No party, or the party standing somewhere the map is blank: the
@@ -248,6 +446,61 @@ bool HandleEvent(const SDL_Event& event)
 
 	default: return false;
 	}
+}
+
+void EditNote(const wiz6::MapSquare& square)
+{
+	if (!context) {
+		return;
+	}
+
+	// A dialog is already up. ImGui claims the mouse from the frame after
+	// one opens, so a second click in the same frame -- the second half of
+	// a double click, say -- still reaches this and would otherwise
+	// re-target a dialog that has only just opened.
+	if (dialog != Dialog::None) {
+		return;
+	}
+
+	dialog         = Dialog::NoteText;
+	dialog_for     = square;
+	dialog_opening = true;
+
+	note_buffer = {};
+
+	if (const auto* note = wiz6::FindNote(
+	            square.level, square.quadrant, square.x, square.y)) {
+		// Truncating rather than refusing: the cap is far above any
+		// note a person would type, and the alternative is a dialog
+		// that cannot be opened.
+		const auto text = utf16_to_utf8(note->text);
+
+		std::snprintf(note_buffer.data(), note_buffer.size(), "%s", text.c_str());
+	}
+}
+
+void EditNoteColour(const wiz6::MapSquare& square)
+{
+	if (!context) {
+		return;
+	}
+
+	if (dialog != Dialog::None) {
+		return;
+	}
+
+	const auto* note = wiz6::FindNote(square.level,
+	                                  square.quadrant,
+	                                  square.x,
+	                                  square.y);
+	if (!note) {
+		return;
+	}
+
+	dialog         = Dialog::NoteColour;
+	dialog_for     = square;
+	dialog_opening = true;
+	chosen_colour  = note->colour;
 }
 
 void Draw(SDL_Renderer* renderer)

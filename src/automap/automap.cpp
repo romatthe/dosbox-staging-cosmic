@@ -68,6 +68,12 @@ struct AutomapState {
 
 	bool applying_persistence = false;
 
+	// How far the pointer has travelled since the left button went down.
+	// Letting go at the end of a pan must not also open the note editor,
+	// and a mouse never holds perfectly still, so this is compared against
+	// a small threshold rather than against zero.
+	float left_drag_px = 0.0f;
+
 	uint64_t last_present_ms = 0;
 };
 
@@ -96,6 +102,12 @@ constexpr auto RendererDriver = "gpu";
 constexpr uint64_t MinPresentIntervalMs = 33;
 
 constexpr auto WindowTitle = "DOSBox Staging Automap";
+
+// How far the pointer may travel between a left button going down and coming
+// up and still count as a click rather than a pan. The original makes no such
+// distinction and pops its note editor at the end of every drag; suppressing
+// that is the one deliberate departure in the mouse bindings.
+constexpr auto DragThresholdPx = 4.0f;
 
 void read_settings(const SectionProp& section)
 {
@@ -481,6 +493,14 @@ void follow_note_link(const float x, const float y)
 	present();
 }
 
+// The square under a click, for the two bindings that open a dialog on one.
+std::optional<wiz6::MapSquare> square_at(const float x, const float y)
+{
+	const auto point = window_to_map_px(x, y);
+
+	return wiz6::SquareAtPixel(point.x, point.y);
+}
+
 } // namespace
 
 void AUTOMAP_AddConfigSection(const ConfigPtr& conf)
@@ -659,8 +679,17 @@ void AUTOMAP_HandleEvent(const SDL_Event& event)
 	// state from the event rather than tracking press and release means a
 	// release that lands outside the window -- which is never delivered
 	// here -- cannot leave the map stuck to the cursor.
+	case SDL_EVENT_MOUSE_BUTTON_DOWN:
+		if (event.button.button == SDL_BUTTON_LEFT) {
+			automap.left_drag_px = 0.0f;
+		}
+		break;
+
 	case SDL_EVENT_MOUSE_MOTION:
 		if ((event.motion.state & SDL_BUTTON_LMASK) != 0) {
+			automap.left_drag_px += std::abs(event.motion.xrel) +
+			                        std::abs(event.motion.yrel);
+
 			// Motion arrives in window coordinates while the map is
 			// drawn in pixels, and the two differ on a HiDPI display.
 			const auto density = SDL_GetWindowPixelDensity(automap.window);
@@ -705,6 +734,29 @@ void AUTOMAP_HandleEvent(const SDL_Event& event)
 		if (event.button.button == SDL_BUTTON_LEFT && ctrl_is_held() &&
 		    !alt_is_held()) {
 			follow_note_link(event.button.x, event.button.y);
+		}
+
+		// Unmodified left writes the square's note, and right colours
+		// it. Both are last, so every modifier combination above has
+		// already had its say.
+		//
+		// A left button coming up at the end of a pan is not a click.
+		if (event.button.button == SDL_BUTTON_LEFT && !alt_is_held() &&
+		    !ctrl_is_held() && automap.left_drag_px <= DragThresholdPx) {
+
+			if (const auto square = square_at(event.button.x,
+			                                  event.button.y)) {
+				overlay::EditNote(*square);
+			}
+		}
+
+		if (event.button.button == SDL_BUTTON_RIGHT && !alt_is_held() &&
+		    !ctrl_is_held()) {
+
+			if (const auto square = square_at(event.button.x,
+			                                  event.button.y)) {
+				overlay::EditNoteColour(*square);
+			}
 		}
 		break;
 

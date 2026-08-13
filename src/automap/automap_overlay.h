@@ -4,6 +4,8 @@
 #ifndef DOSBOX_AUTOMAP_OVERLAY_H
 #define DOSBOX_AUTOMAP_OVERLAY_H
 
+#include "automap_wiz6_coords.h"
+
 struct SDL_Renderer;
 struct SDL_Window;
 union SDL_Event;
@@ -32,6 +34,15 @@ bool HandleEvent(const SDL_Event& event);
 // Draws the overlay into whatever the renderer is currently targeting. Call
 // after the map and before presenting.
 void Draw(SDL_Renderer* renderer);
+
+// Opens the note editor on a square, with whatever note is already there in
+// the field. Confirming it empty removes the note, which is the only way to
+// delete one -- in this port as in the original.
+void EditNote(const wiz6::MapSquare& square);
+
+// Opens the colour picker for the note on a square. Does nothing if that
+// square has no note: a colour is a property of a note, not of a square.
+void EditNoteColour(const wiz6::MapSquare& square);
 
 } // namespace overlay
 
